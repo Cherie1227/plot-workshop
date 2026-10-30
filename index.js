@@ -2,6 +2,7 @@ import { createWorkbench } from './ui.js';
 import { normalizePreset, exportPreset, compilePreset } from './lib/preset.js';
 import { parseContent } from './lib/content.js';
 import { requestPlan, normalizeEndpoint, redactSecrets } from './lib/planner.js';
+import { polishMessages, validatePolish } from './lib/purify.js';
 import * as nativeAnima from './lib/anima.js';
 import { createAnimaCleanupGuard } from './lib/anima-cleanup.js';
 import { fetchModelList, testApiConnection, requestDiagnosis } from './lib/api.js';
@@ -26,7 +27,7 @@ const newId = prefix => `${prefix}_${Date.now().toString(36)}_${Math.random().to
 const keyStorageName = id => `${STORE}:api-key:${id}`;
 const bookNames = input => Array.isArray(input) ? [...new Set(input.filter(name => typeof name === 'string' && name.trim() && name.length <= 500))] : [];
 // Execution switches do not change the content of an already completed outline.
-const planningSettings = settings => Object.fromEntries(Object.entries(settings).filter(([key]) => !['theme', 'fontSize', 'lineHeight', 'enabled', 'regeneratePolicy', 'autoOnSend', 'mode'].includes(key)));
+const planningSettings = settings => Object.fromEntries(Object.entries(settings).filter(([key]) => !['theme', 'fontSize', 'lineHeight', 'enabled', 'regeneratePolicy', 'autoOnSend', 'mode', 'polishEnabled', 'polishModel'].includes(key)));
 // Labels and grouping display preferences do not change the compiled request.
 const outlinePreset = preset => ({
     characterId: preset.characterId,
@@ -722,7 +723,28 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             throw error;
         }
         check();
-        const { raw: returnedText, analysis, ...plan } = result;
+        const { raw: returnedText, analysis, ...parsedPlan } = result;
+        let plan = parsedPlan, polished = false;
+        if (state.settings.polishEnabled && state.settings.polishModel.trim()) {
+            planningStatus('净化模型正在改写大纲语言…');
+            let purified = null;
+            try {
+                purified = await requestPlan({ baseUrl: state.settings.baseUrl, model: state.settings.polishModel, apiKey: state.apiKey,
+                    messages: polishMessages(plan.xml), signal, timeoutMs: 300000, stream: state.settings.stream,
+                    transport: createSTTransport(getContext, fetchImpl), DOMParser: globalThis.DOMParser });
+            } catch (error) {
+                check(); // A dead round cancels first; a real polish failure only falls back.
+                log('warn', 'polish.failed', '净化请求未完成，已沿用原大纲。', { message: redactSecrets(error.message, [...historicalSecrets, state.apiKey]) });
+            }
+            check();
+            if (purified) {
+                if (validatePolish(plan, purified)) {
+                    plan = { xml: purified.xml, plot: purified.plot, characters: purified.characters, segments: purified.segments, endState: purified.endState };
+                    polished = true;
+                    log('success', 'polish.completed', '大纲语言已净化，结构与交接标记校验一致。');
+                } else log('warn', 'polish.mismatch', '净化结果与原大纲的结构或交接标记不一致，已沿用原大纲。');
+            }
+        }
         state.plan = plan; state.rawPlan = plan.xml;
         state.planningAnalysis = analysis ? { ...analysis, edited: false } : { reasoning: '', supplement: '', truncated: false, edited: false };
         log('success', 'planner.request.completed', '本轮大纲已生成并通过格式校验。');
@@ -732,7 +754,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         draftRound = { version: 1, chatId: anchor.chatId, input: userInput, baseStoryKey: draftStoryKey(baseStory) };
         restoredDraft = false;
         recordVersion(versionLabel); refreshPromptPreview();
-        state.stage = 'review'; status('本轮大纲已生成，可以编辑、复制或确认扩写。');
+        state.stage = 'review'; status(polished ? '本轮大纲已生成并完成语言净化，可以编辑、复制或确认扩写。' : '本轮大纲已生成，可以编辑、复制或确认扩写。');
         return result;
     }
     async function awaitApproval() {

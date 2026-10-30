@@ -1895,6 +1895,50 @@ test('other extension injections reach the planner only when the setting is enab
     assert.equal(on.plugin.state.promptInspection.sources.find(source => source.name === '其他扩展注入').status, '已读取 · 无注入');
 });
 
+test('outline language polish rewrites language only, falls back safely and leaves anchors intact', async t => {
+    const polishedXml = '<content><plot>接信。</plot><characters><character name="林澄"><emotion>戒备略有缓和。</emotion><response>接过信。</response></character></characters><segments><segment index="1">林澄看见封口完好，把信接了过来。</segment></segments><end_state>等待回应。</end_state></content>';
+    const mismatchXml = '<content><plot>接信。</plot><characters><character name="林澄"><emotion>缓和。</emotion><response>接信。</response></character></characters><segments><segment index="1">接信。</segment><segment index="2">凭空多出的第二段。</segment></segments><end_state>等待回应。</end_state></content>';
+    const mode = (polishReply, polishFails = false) => ({ options }) => {
+        if (JSON.parse(options.body).model === 'flash-polish') {
+            if (polishFails) return new Response('upstream broken', { status: 500 });
+            return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: polishReply } }] }));
+        }
+        return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: xml } }] }));
+    };
+
+    const off = await fixture(t);
+    await off.plugin.onAction('generate', { input: off.input.value });
+    assert.equal(off.calls.planner.length, 1, 'polish stays off by default');
+
+    const on = await fixture(t, { fetchMode: mode(polishedXml), settings: { polishEnabled: true, polishModel: 'flash-polish' } });
+    await on.plugin.onAction('generate', { input: on.input.value });
+    assert.equal(on.calls.planner.length, 2);
+    const polishCall = on.calls.planner[1];
+    assert.equal(polishCall.body.model, 'flash-polish');
+    assert.equal(polishCall.body.messages[0].role, 'system');
+    assert.match(polishCall.body.messages[0].content, /只改语言，不改内容/);
+    assert.ok(polishCall.body.messages[1].content.includes('林澄看见封口完好'));
+    assert.ok(on.plugin.state.plan.xml.includes('把信接了过来'));
+    assert.match(on.plugin.state.status, /语言净化/);
+    await on.plugin.onAction('confirmAndWrite');
+    assert.ok(on.calls.writer[0].prompt.includes('把信接了过来'));
+
+    const mismatch = await fixture(t, { fetchMode: mode(mismatchXml), settings: { polishEnabled: true, polishModel: 'flash-polish' } });
+    await mismatch.plugin.onAction('generate', { input: mismatch.input.value });
+    assert.ok(mismatch.plugin.state.plan.xml.includes('林澄看见封口完好，接过信。'));
+    assert.equal(mismatch.plugin.state.planningFailure, null);
+
+    const failing = await fixture(t, { fetchMode: mode('', true), settings: { polishEnabled: true, polishModel: 'flash-polish' } });
+    await failing.plugin.onAction('generate', { input: failing.input.value });
+    assert.ok(failing.plugin.state.plan.xml.includes('林澄看见封口完好，接过信。'));
+
+    // Polish settings are execution switches: toggling them must not invalidate a finished outline.
+    await off.plugin.onAction('settings', { polishEnabled: true, polishModel: 'flash-polish' });
+    assert.match(off.plugin.state.status, /仍匹配|可以编辑、复制或确认扩写/);
+    await off.plugin.onAction('confirmAndWrite');
+    assert.equal(off.calls.writer.length, 1);
+});
+
 test('inspecting an unchanged generated plan preserves confirmation and preview exactly matches the sent planner messages', async t => {
     const f = await fixture(t);
     await f.plugin.onAction('generate', { input: f.input.value });

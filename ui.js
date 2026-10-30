@@ -784,6 +784,14 @@ export function createWorkbench({ getState, onAction }) {
     readExtensionPrompts.addEventListener('change', () => { configDrafts.set('readExtensionPrompts', readExtensionPrompts.checked); settingsSaveStatus.textContent = '已修改，点击保存设置可确认当前配置。'; act('settings', { readExtensionPrompts: readExtensionPrompts.checked }); });
     decorateCheckbox(extLabel, readExtensionPrompts, el('span', '', '读取其他扩展的注入内容'));
     extensionsSection.append(extLabel, el('p', 'pw-hint', '开启后，伏笔、持续状态等其他扩展注入正文请求的内容会作为已成立资料进入本轮规划；仅规划端读取，注入与扩写仍由酒馆原生机制处理。'));
+    const polishSection = settingsSection('大纲净化');
+    const polishLabel = el('label', 'pw-checkbox-label');
+    const polishEnabled = control('checkbox');
+    polishEnabled.addEventListener('change', () => { configDrafts.set('polishEnabled', polishEnabled.checked); settingsSaveStatus.textContent = '已修改，点击保存设置可确认当前配置。'; act('settings', { polishEnabled: polishEnabled.checked }); });
+    decorateCheckbox(polishLabel, polishEnabled, el('span', '', '规划完成后净化大纲语言'));
+    polishSection.append(polishLabel);
+    settingInput(polishSection, 'polishModel', '净化模型', 'text', '如 gemini-3-flash，留空不净化', undefined, { spellcheck: false });
+    polishSection.append(el('p', 'pw-hint', '净化复用规划接口与密钥，由快速模型把大纲改写为平实直述：事实、决定、字段结构与交接标记保持不变，结构与标记校验不一致或请求失败时自动沿用原大纲。'));
     const updateSection = settingsSection('扩展更新', true, settingsPanel);
     const updateVersion = el('p', 'pw-hint');
     const updatePhase = el('p', 'pw-update-phase');
@@ -1000,6 +1008,7 @@ export function createWorkbench({ getState, onAction }) {
         result.mode = modeSelect.value;
         result.autoOnSend = autoOnSend.checked;
         result.readExtensionPrompts = readExtensionPrompts.checked;
+        result.polishEnabled = polishEnabled.checked;
         return result;
     }
     function savedAppearance() {
@@ -1072,6 +1081,7 @@ export function createWorkbench({ getState, onAction }) {
         if (Object.entries(settingsFields).some(([key, node]) => node.type === 'checkbox' ? node.checked !== Boolean(settings[key]) : node.value !== String(settings[key] ?? ''))) return true;
         return modeSelect.value !== (settings.mode || 'review') || autoOnSend.checked !== Boolean(settings.autoOnSend)
             || readExtensionPrompts.checked !== Boolean(settings.readExtensionPrompts)
+            || polishEnabled.checked !== Boolean(settings.polishEnabled)
             || keyField.value !== (state.apiKey || '');
     }
     async function performUpdate(type) {
@@ -1743,6 +1753,7 @@ export function createWorkbench({ getState, onAction }) {
         if (!configDrafts.has('mode')) modeSelect.value = settings.mode || 'review';
         if (!configDrafts.has('autoOnSend')) autoOnSend.checked = Boolean(settings.autoOnSend);
         if (!configDrafts.has('readExtensionPrompts')) readExtensionPrompts.checked = Boolean(settings.readExtensionPrompts);
+        if (!configDrafts.has('polishEnabled')) polishEnabled.checked = Boolean(settings.polishEnabled);
         modeHint.textContent = settings.mode === 'auto' ? '大纲通过格式检查后直接交给主模型。' : settings.mode === 'manual' ? '只生成大纲，不自动注入主请求。' : '大纲生成后暂停，确认后再交给主模型。';
         generateButton.disabled = !enabled || isBlocked(state);
         generateButton.querySelector('span').textContent = state.busy ? '正在处理…' : state.animaChecking ? '检测记忆扩展…' : state.preview ? '载入示例大纲' : '生成大纲';
