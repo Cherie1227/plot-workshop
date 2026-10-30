@@ -1,0 +1,12 @@
+{
+  "display_name": "剧情工坊 · 双模型大纲",
+  "loading_order": 99999,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "剧情工坊",
+  "version": "0.1.0",
+  "minimum_client_version": "1.12.0",
+  "generate_interceptor": "PlotWorkshop_Interceptor"
+}

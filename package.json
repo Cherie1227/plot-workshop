@@ -1,0 +1,10 @@
+{
+  "name": "sillytavern-plot-workshop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test --test-isolation=none tests/*.test.mjs",
+    "test:anima": "node --experimental-vm-modules tests/anima-adapter.cjs"
+  }
+}
