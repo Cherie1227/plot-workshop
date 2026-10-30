@@ -8,7 +8,7 @@ async function fixture() {
   const data = {
     context: {chatId:'chat-A',characterId:0,characters:[{data:{}}],chatMetadata:{anima_rag_active_files:['memory-A']},chat:[{is_user:false,mes:'开场'},{is_user:true,mes:'旧输入'}],extensionSettings:{anima_memory_system:{rag:{rag_enabled:true,vector_prompt:[{type:'context',count:5}],injection_settings:{recent_count:0}},status:{status_enabled:false}}}},
     payload:null,entries:[],queryCalls:0,nativeCalls:0,containerWrites:0,version:'3.3.6',nativeNoop:false,
-    queryResult:{merged_chat_results:[],merged_kb_results:[]},variables:{},
+    queryResult:{merged_chat_results:[],merged_kb_results:[]},variables:{},kbPayload:{kbContext:{ids:[],strategy:{}},bm25ConfigsKb:[]},
   };
   const context = vm.createContext({URL,JSON,Date,Map,Set,Promise,Error,Number,String,Array,RegExp,AbortController,structuredClone,location:{origin:'http://localhost:8000'},fetch:async()=>({ok:true,json:async()=>({version:data.version,generate_interceptor:'Anima_RAG_Interceptor'})}),SillyTavern:{getContext:()=>data.context},TavernHelper:{getChatWorldbookName:()=> 'book',getWorldbook:async()=> data.entries,getVariables:async()=>data.variables}});
   const updateContainer = (name,content) => {data.containerWrites++;if(data.writeHook)return data.writeHook(name,content);const entry=data.entries.find(e=>e.name===name);if(entry){entry.content=content;entry.enabled=!!content;}else if(content)data.entries.push({name,content,enabled:true});};
@@ -16,7 +16,7 @@ async function fixture() {
   const native = {
     'rag_logic.js': {getEffectiveSettings:()=>data.context.extensionSettings.anima_memory_system.rag,getLastRetrievalPayload:()=>data.payload,queryDual:async args=>{data.queryCalls++;data.args=args;return data.queryHook?data.queryHook():data.queryResult;}},
     'utils.js': {getSmartCollectionId:()=> 'memory-A',processMacros:text=>text,applyRegexRules:(text,rules)=>rules?.[0]?.removeAll?'':text},
-    'knowledge.js':{getKbSearchPayload:()=>({kbContext:{ids:[],strategy:{}},bm25ConfigsKb:[]})},
+    'knowledge.js':{getKbSearchPayload:()=>data.kbPayload},
     'bm25_logic.js':{getBm25BackendConfig:()=>({enabled:false})},
     'worldbook_api.js':{updateRagEntry:async content=>updateContainer('[ANIMA_Chat_History_Container]',content),updateKnowledgeEntry:async content=>updateContainer('[ANIMA_Knowledge_Container]',content)},
   };
@@ -32,6 +32,107 @@ async function fixture() {
 async function test(name, fn){await fn();passed++;process.stdout.write(`PASS ${name}\n`);}
 (async()=>{
  await test('direct uses pending input and accepts genuine empty',async()=>{const f=await fixture();const r=await f.recall();assert.equal(r.status,'empty');assert.equal(r.memoryParts.length,0);assert.match(f.data.args.searchText,/新输入/);assert.equal(f.data.queryCalls,1);assert.equal(f.data.context.chat.length,2);});
+ await test('new chat without a worldbook or recall sources can plan without a backend call',async()=>{
+   const f=await fixture();delete f.data.context.chatMetadata.anima_rag_active_files;
+   f.global.TavernHelper.getChatWorldbookName=()=>null;
+   f.global.TavernHelper.getWorldbook=()=>assert.fail('No worldbook exists yet');
+   f.data.context.extensionSettings.anima_memory_system.rag.vector_prompt=[];
+   const result=await f.recall();assert.equal(result.status,'empty');assert.equal(result.retrievalSkipped,'no_sources');
+   assert.equal(result.text,'');assert.equal(result.memoryParts.length,0);assert.equal(result.warnings.length,0);
+   assert.equal(f.data.queryCalls,0);assert.equal(f.data.containerWrites,0);
+ });
+ await test('automatic no-source skip ignores an old global payload and succeeds for this generation',async()=>{
+   const f=await fixture();f.data.context.chatMetadata.anima_rag_active_files=[];f.data.nativeNoop=true;
+   f.data.payload={merged_chat_results:[{text:'绝不能使用的旧回忆'}],merged_kb_results:[]};
+   await f.api.installAnimaObserver();const token=f.api.beginAnimaGeneration();await f.global.Anima_RAG_Interceptor([],0,null,'normal');
+   const result=await f.recall({generationToken:token,userInput:'旧输入'});
+   assert.equal(result.status,'empty');assert.equal(result.retrievalSkipped,'no_sources');assert.equal(result.text,'');
+   assert.equal(f.data.queryCalls,0);assert.equal(f.data.nativeCalls,1);
+   const retry=await f.recall({generationToken:token,userInput:'旧输入'});assert.equal(retry.reusedForRound,true);assert.equal(f.data.nativeCalls,1);
+ });
+ await test('no-source skip still reads local recent summaries and status in manual and automatic modes',async()=>{
+   for(const automatic of [false,true]){
+     const f=await fixture();f.data.context.chatMetadata.anima_rag_active_files=[];f.data.nativeNoop=true;
+     f.data.context.extensionSettings.anima_memory_system.rag.injection_settings.recent_count=1;
+     f.data.context.extensionSettings.anima_memory_system.status.status_enabled=true;f.data.variables={anima_data:'门仍开着'};
+     const summary={name:'摘要',extra:{createdBy:'anima_summary',history:[{index:1}]},content:'<1>本地已发生事件</1>'};
+     f.data.entries=[summary];let options={};
+     if(automatic){await f.api.installAnimaObserver();options={generationToken:f.api.beginAnimaGeneration(),userInput:'旧输入'};await f.global.Anima_RAG_Interceptor([],0,null,'normal');}
+     const result=await f.recall(options);assert.equal(result.status,'ok');assert.equal(result.retrievalSkipped,'no_sources');
+     assert.match(result.text,/本地已发生事件/);assert.match(result.text,/门仍开着/);assert.equal(f.data.queryCalls,0);
+     assert.equal(summary.content,'<1>本地已发生事件</1>');assert.equal(f.data.context.extensionSettings.anima_memory_system.rag.injection_settings.recent_count,1);
+   }
+ });
+ await test('no-source skip respects recent_count zero and only clears stale dynamic containers',async()=>{
+   const f=await fixture();f.data.context.chatMetadata.anima_rag_active_files=[];
+   const summary={name:'摘要',extra:{createdBy:'anima_summary'},content:'保留摘要'};
+   const ordinary={name:'世界设定',content:'保留设定'};
+   f.data.entries=[summary,ordinary,{name:'[ANIMA_Chat_History_Container]',content:'上轮召回',enabled:true},{name:'[ANIMA_Knowledge_Container]',content:'上轮知识',enabled:true}];
+   const result=await f.recall();assert.equal(result.text,'');assert.equal(f.data.queryCalls,0);assert.equal(f.data.containerWrites,2);
+   assert.equal(summary.content,'保留摘要');assert.equal(ordinary.content,'保留设定');assert.equal(f.data.entries[2].content,'');assert.equal(f.data.entries[3].content,'');
+ });
+ await test('no summaries does not skip a bound history library or knowledge library',async()=>{
+   for(const kind of ['chat','kb']){
+     const f=await fixture();if(kind==='kb'){f.data.context.chatMetadata.anima_rag_active_files=[];f.data.kbPayload.kbContext.ids=['knowledge-A'];}
+     const result=await f.recall();assert.equal(result.status,'empty');assert.equal(result.retrievalSkipped,null);assert.equal(f.data.queryCalls,1);
+   }
+ });
+ await test('manual reroll and following automatic send reuse the no-source snapshot without backend calls',async()=>{
+   const f=await fixture();f.data.context.chatMetadata.anima_rag_active_files=[];await f.api.installAnimaObserver();
+   await f.recall();const retry=await f.recall();assert.equal(retry.reusedForRound,true);
+   f.data.context.chat.push({is_user:true,mes:'新输入'});const token=f.api.beginAnimaGeneration();await f.global.Anima_RAG_Interceptor([],0,null,'normal');
+   const result=await f.recall({generationToken:token});assert.equal(result.retrievalSkipped,'no_sources');assert.equal(result.reusedForRound,true);
+   assert.equal(f.data.queryCalls,0);assert.equal(f.data.nativeCalls,0);
+ });
+ await test('binding a source invalidates the empty snapshot even when only effective knowledge ids change',async()=>{
+   for(const kind of ['chat','kb']){
+     const f=await fixture();f.data.context.chatMetadata.anima_rag_active_files=[];await f.recall();
+     if(kind==='chat')f.data.context.chatMetadata.anima_rag_active_files=['memory-A'];else f.data.kbPayload.kbContext.ids=['knowledge-A'];
+     const result=await f.recall();assert.equal(result.retrievalSkipped,null);assert.equal(f.data.queryCalls,1);
+   }
+ });
+ await test('empty source configuration still requires current native observation for automatic planning',async()=>{
+   const f=await fixture();f.data.context.chatMetadata.anima_rag_active_files=[];await f.api.installAnimaObserver();const token=f.api.beginAnimaGeneration();
+   await assert.rejects(f.recall({generationToken:token,userInput:'旧输入'}),e=>e.code==='ANIMA_FRESH_RESULT_REQUIRED');assert.equal(f.data.queryCalls,0);
+ });
+ await test('adding knowledge sources after native skip rejects the skip proof',async()=>{
+   const f=await fixture();f.data.context.chatMetadata.anima_rag_active_files=[];f.data.nativeNoop=true;await f.api.installAnimaObserver();
+   const token=f.api.beginAnimaGeneration();await f.global.Anima_RAG_Interceptor([],0,null,'normal');f.data.kbPayload.kbContext.ids=['knowledge-A'];
+   await assert.rejects(f.recall({generationToken:token,userInput:'旧输入'}),e=>e.code==='ANIMA_CONTEXT_CHANGED');assert.equal(f.data.queryCalls,0);
+ });
+ await test('source changes during local reads cannot produce a stale empty snapshot',async()=>{
+   const f=await fixture();f.data.context.chatMetadata.anima_rag_active_files=[];
+   f.global.TavernHelper.getWorldbook=async()=>{f.data.context.extensionSettings.anima_memory_system.rag.injection_settings.recent_count=1;return [];};
+   await assert.rejects(f.recall(),e=>e.code==='ANIMA_CONTEXT_CHANGED');assert.equal(f.data.queryCalls,0);
+ });
+ await test('removing the only knowledge source during local reads rejects the changed snapshot before any query or write',async()=>{
+   const f=await fixture();f.data.context.chatMetadata.anima_rag_active_files=[];f.data.kbPayload.kbContext.ids=['knowledge-A'];
+   f.global.TavernHelper.getWorldbook=async()=>{f.data.kbPayload.kbContext.ids=[];return [];};
+   await assert.rejects(f.recall(),e=>e.code==='ANIMA_CONTEXT_CHANGED');
+   assert.equal(f.data.queryCalls,0);assert.equal(f.data.containerWrites,0);
+   const retry=await f.recall();assert.equal(retry.status,'empty');assert.equal(retry.retrievalSkipped,'no_sources');
+   assert.equal(retry.reusedForRound,false);assert.equal(f.data.queryCalls,0);
+ });
+ await test('invalid binding lists and unreadable local data never masquerade as no sources',async()=>{
+   for(const kind of ['chat','kb','worldbook','summary']){
+     const f=await fixture();f.data.context.chatMetadata.anima_rag_active_files=[];
+     if(kind==='chat')f.data.context.chatMetadata.anima_rag_active_files={};
+     if(kind==='kb')f.data.kbPayload.kbContext.ids=null;
+     if(kind==='worldbook')f.global.TavernHelper.getWorldbook=async()=>({});
+     if(kind==='summary'){f.data.context.extensionSettings.anima_memory_system.rag.injection_settings.recent_count=1;f.data.entries=[{extra:{createdBy:'anima_summary'},content:'损坏摘要'}];}
+     await assert.rejects(f.recall(),e=>['ANIMA_SETTINGS','ANIMA_WORLDBOOK_INVALID','ANIMA_SUMMARY_INVALID'].includes(e.code));assert.equal(f.data.queryCalls,0);
+   }
+ });
+ await test('a fresh native error cannot be hidden by an empty source list',async()=>{
+   const f=await fixture();f.data.context.chatMetadata.anima_rag_active_files=[];f.data.queryResult={_is_critical_failure:true};
+   await f.api.installAnimaObserver();const token=f.api.beginAnimaGeneration();await f.global.Anima_RAG_Interceptor([],0,null,'normal');
+   await assert.rejects(f.recall({generationToken:token,userInput:'旧输入'}),e=>e.code==='ANIMA_QUERY_FAILED');
+ });
+ await test('native exception is not a successful no-source skip',async()=>{
+   const f=await fixture();f.data.context.chatMetadata.anima_rag_active_files=[];f.data.nativeNoop=true;f.data.nativeHook=()=>{throw new Error('native failure');};
+   await f.api.installAnimaObserver();const token=f.api.beginAnimaGeneration();await assert.rejects(f.global.Anima_RAG_Interceptor([],0,null,'normal'));
+   await assert.rejects(f.recall({generationToken:token,userInput:'旧输入'}),e=>e.code==='ANIMA_FRESH_RESULT_REQUIRED');
+ });
  await test('memory metadata retains complete source blocks and survives cache reuse without mutation',async()=>{
    const f=await fixture();
    f.data.context.extensionSettings.anima_memory_system.rag.injection_settings.recent_count=1;

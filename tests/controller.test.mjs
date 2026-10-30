@@ -312,6 +312,38 @@ test('manual planning then confirmation writes only final prose and clears this-
     assert.equal(calls.invalidated, 1);
 });
 
+test('manual planning without Anima recall sources still uses current story material and can write prose', async t => {
+    const f = await fixture(t, {
+        recallAnima: async () => ({ text: '', memoryParts: [], status: 'empty', retrievalSkipped: 'no_sources', source: 'fixture' }),
+    });
+    await f.plugin.onAction('generate', { input: f.input.value });
+    assert.ok(f.plugin.state.plan);
+    assert.equal(f.calls.writer.length, 0);
+    assert.equal(f.calls.recalled, 1);
+    const messages = f.calls.planner[0].body.messages;
+    const requestText = messages.map(message => message.content).join('\n');
+    for (const text of ['她递出信。', '谨慎而重视约定', '他站在门口。']) assert.ok(requestText.includes(text));
+    const inspection = f.plugin.state.promptInspection;
+    const memoryEntry = inspection.entries.find(entry => entry.id === 'anima_memory');
+    assert.deepEqual(memoryEntry.messages, []);
+    assert.equal(memoryEntry.tokens, 0);
+    const memorySource = inspection.sources.find(source => source.name === 'Anima');
+    assert.match(memorySource.status, /已读取.*暂无.*来源/);
+    assert.match(memorySource.detail, /摘要/);
+    assert.match(memorySource.detail, /状态/);
+    assert.match(f.plugin.state.animaStatus, /尚无.*记忆.*继续规划/);
+    const completed = f.plugin.state.logs.find(entry => entry.event === 'anima.recall.completed');
+    assert.equal(completed.details.retrievalSkipped, 'no_sources');
+    assert.equal(completed.details.status, 'empty');
+    assert.doesNotMatch(requestText, /no_sources|尚无可召回记忆|暂无召回来源|本轮读取成功，没有相关结果/);
+    await f.plugin.onAction('confirmAndWrite');
+    assert.equal(f.calls.writer.length, 1);
+    assert.ok(f.calls.writer[0].prompt.includes(f.plugin.state.plan.xml));
+    assert.doesNotMatch(f.calls.writer[0].prompt, /no_sources|尚无可召回记忆|暂无召回来源|本轮读取成功，没有相关结果/);
+    assert.deepEqual(f.ctx.chat.map(message => message.mes), ['他站在门口。', '她递出信。', '林澄接过信，暂时没有拆开。']);
+    assert.equal(f.ctx.extensionPrompts[INJECTION_KEY], undefined);
+});
+
 test('writer reroll uses the frozen outline and memory, preserves prose candidates and input draft', async t => {
     const f = await fixture(t);
     assert.equal(f.plugin.canRewrite(), false);
@@ -426,6 +458,30 @@ test('automatic send performs one planner request then one main-model expansion'
     assert.equal(plugin.state.busy, false);
     assert.equal(ctx.extensionPrompts[INJECTION_KEY], undefined);
     assert.equal(ctx.chat.filter(m => m.is_user).length, 1);
+});
+
+test('automatic send without Anima recall sources reaches main prose without pausing or injecting an empty-memory notice', async t => {
+    const f = await fixture(t, {
+        settings: { autoOnSend: true, mode: 'auto' },
+        recallAnima: async () => ({ text: '', memoryParts: [], status: 'empty', retrievalSkipped: 'no_sources', source: 'fixture' }),
+    });
+    await f.ctx.generate('normal');
+    assert.equal(f.calls.recalled, 1);
+    assert.equal(f.calls.planner.length, 1);
+    assert.equal(f.calls.writer.length, 1);
+    assert.equal(f.calls.aborted, 0);
+    assert.equal(f.plugin.state.awaitingReview, false);
+    assert.equal(f.plugin.state.busy, false);
+    const requestText = f.calls.planner[0].body.messages.map(message => message.content).join('\n');
+    for (const text of ['她递出信。', '谨慎而重视约定', '他站在门口。']) assert.ok(requestText.includes(text));
+    const inspection = f.plugin.state.promptInspection;
+    assert.equal(inspection.entries.find(entry => entry.id === 'anima_memory').tokens, 0);
+    assert.match(inspection.sources.find(source => source.name === 'Anima').status, /已读取.*暂无.*来源/);
+    assert.ok(f.plugin.state.logs.some(entry => entry.event === 'anima.recall.completed' && entry.details.retrievalSkipped === 'no_sources'));
+    assert.ok(f.calls.writer[0].prompt.includes(f.plugin.state.plan.xml));
+    assert.doesNotMatch(`${requestText}\n${f.calls.writer[0].prompt}`, /no_sources|尚无可召回记忆|暂无召回来源|本轮读取成功，没有相关结果/);
+    assert.deepEqual(f.ctx.chat.map(message => message.mes), ['他站在门口。', '她递出信。', '林澄接过信，暂时没有拆开。']);
+    assert.equal(f.ctx.extensionPrompts[INJECTION_KEY], undefined);
 });
 
 test('input and preset changes invalidate an already generated outline', async t => {

@@ -414,7 +414,8 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             { name: '角色卡', status: planningContext.charDescription || planningContext.charPersonality || planningContext.scenario ? '已读取' : '已读取 · 空', detail: '以本轮酒馆角色卡与覆盖字段为准。' },
             { name: '聊天历史', status: planningContext.chatHistory.length ? '已读取' : '已读取 · 空', detail: `${planningContext.chatHistory.length} 条历史消息；当前输入单独提供。` },
             { name: '世界书', status: planningContext.worldInfoBefore || planningContext.worldInfoAfter ? '已读取' : '已读取 · 无命中', detail: '本轮干扫描命中的条目，未命中不等于读取失败。' },
-            { name: 'Anima', status: recalled.status === 'empty' ? '已读取 · 无相关记忆' : '已读取', detail: recalled.reusedForRound ? '复用本轮有效召回。' : '召回完成，沿用 Anima 的记忆保留规则。' },
+            { name: 'Anima', status: recalled.retrievalSkipped === 'no_sources' ? '已读取 · 暂无召回来源' : recalled.status === 'empty' ? '已读取 · 无相关记忆' : '已读取',
+                detail: recalled.retrievalSkipped === 'no_sources' ? '未绑定召回库，已读取本地摘要与状态；使用当前聊天资料继续规划。' : recalled.reusedForRound ? '复用本轮有效召回。' : '召回完成，沿用 Anima 的记忆保留规则。' },
             ...extraBooks.books.map(book => ({ name: `额外世界书 · ${book.name}`, status: book.count ? '已读取' : '已读取 · 空', detail: `${book.count} 个启用条目。仅本轮规划使用。` })),
         ];
         state.promptInspection = buildPromptInspection({ preset: state.preset, compiled, sources, model: state.settings.model });
@@ -547,8 +548,11 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
                 settings: settingsForAnima(committed), generationToken: token,
                 onStatus: message => { if (id === workId) { state.animaStatus = message; render(); } } });
         check();
-        log('success', 'anima.recall.completed', '本轮 Anima 记忆读取完成。', { status: memory.status, reused: memory.reusedForRound === true });
-        state.animaStatus = memory.reusedForRound ? '已读取本轮记忆；重新规划不额外消耗保留次数' : memory.status === 'empty' ? '本轮读取成功，没有相关结果' : `已读取本轮记忆 · ${memory.source}`;
+        log('success', 'anima.recall.completed', memory.retrievalSkipped === 'no_sources' ? '暂无召回来源，已读取本地摘要与状态，继续规划。' : '本轮 Anima 记忆读取完成。',
+            { status: memory.status, reused: memory.reusedForRound === true, retrievalSkipped: memory.retrievalSkipped || null });
+        state.animaStatus = memory.retrievalSkipped === 'no_sources'
+            ? memory.status === 'empty' ? '尚无可召回记忆，使用当前聊天资料继续规划' : '未执行召回，已读取本地摘要与状态'
+            : memory.reusedForRound ? '已读取本轮记忆；重新规划不额外消耗保留次数' : memory.status === 'empty' ? '本轮读取成功，没有相关结果' : `已读取本轮记忆 · ${memory.source}`;
         check();
         status('正在读取角色卡与世界书…');
         planningRevision = worldRevision;
