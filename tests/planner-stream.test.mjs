@@ -56,6 +56,21 @@ test('SSE supports byte-split UTF-8, CRLF, comments, BOM and multiline data fiel
     assert.deepEqual(result.analysis, { reasoning: '', supplement: '', truncated: false });
 });
 
+test('split SSE tag mentions preserve analysis and format failures retain the completed model text', async () => {
+    const before = '<think>请用 <content> 标签交付。</think>\n';
+    const chunks = [delta(before.slice(0, 14)), delta(before.slice(14) + xml.slice(0, 4)), delta(xml.slice(4)), finish(), '[DONE]'];
+    const result = await plan(chunks.map(event).join(''), {}, { chunkSize: 3 });
+    assert.equal(result.plot, '当面解释');
+    assert.equal(result.analysis.supplement, before.trim());
+    assert.ok(!result.xml.includes('think'));
+    await assert.rejects(plan(complete('普通文字，没有协议标签'), {}, { chunkSize: 3 }), error => {
+        assert.equal(error.code, 'CONTENT_MISSING');
+        assert.equal(error.responsePreview.content, '普通文字，没有协议标签');
+        assert.equal(error.responsePreview.finishReason, 'stop');
+        return true;
+    });
+});
+
 test('an explicit stop permits normal EOF and a final SSE line need not have a trailing newline', async () => {
     for (const text of [event(delta(xml)) + event(finish()), event(delta(xml)) + `data: ${JSON.stringify(finish())}`, complete(xml).trimEnd()]) {
         assert.equal((await plan(text)).raw, xml);

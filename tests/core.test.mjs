@@ -110,6 +110,37 @@ test('extracts exactly one XML content and excludes external analysis', () => {
     assert.equal(parseContent(result.xml).xml, result.xml);
 });
 
+test('plain tag mentions in surrounding analysis do not count as another outline', () => {
+    const expected = parseContent(validXml);
+    for (const mention of ['使用 <content> 标签。', '使用 `<content>` 和 `</content>`。', '<think>交付 <content>…</content> 格式。</think>', '<think>最终输出 <content></think>', '说明结束于 </content>。']) {
+        assert.deepEqual(parseContent(`${mention}\n${validXml}\n${mention}`), expected);
+    }
+    assert.deepEqual(parseContent(`\`\`\`xml\n${validXml}\n\`\`\``), expected);
+});
+
+test('missing, truncated and competing structured outlines have distinct errors', () => {
+    for (const text of ['', '只有普通剧情文字。', '<CONTENT>大小写不符</CONTENT>', '&lt;content&gt;标签被转义&lt;/content&gt;']) {
+        assert.throws(() => parseContent(text), { code: 'CONTENT_MISSING' });
+    }
+    for (const text of ['<content', '<content>', '<content><plot>未完成', validXml.slice(0, -10)]) {
+        assert.throws(() => parseContent(text), { code: 'CONTENT_TRUNCATED' });
+    }
+    const partial = '<content><plot>第二份未完成';
+    for (const text of [validXml + validXml, validXml + partial, '<content><plot>字段不全</plot></content>' + validXml]) {
+        assert.throws(() => parseContent(text), { code: 'CONTENT_MULTIPLE' });
+    }
+});
+
+test('extraction never salvages nested content or relaxes the XML schema', () => {
+    for (const text of [`<content>${validXml}</content>`, `<content><plot>外层未完成${validXml}`, `<content><!--${validXml}--></content>`, `<content><![CDATA[${validXml}]]></content>`, validXml.replace('接过信，仍保留戒备。', '<content>嵌套标签</content>')]) {
+        assert.throws(() => parseContent(text), { code: 'CONTENT_INVALID' });
+    }
+    for (const text of [validXml.replace('<content>', '<content extra="x">'), validXml.replace('<plot>', '<plot extra="x">'), validXml.replace('</plot>', '&bad;</plot>')]) {
+        assert.throws(() => parseContent(`说明提到 <content>。\n${text}`), { code: 'CONTENT_INVALID' });
+    }
+    assert.throws(() => parseContent('<content></content>'), { code: 'CONTENT_INVALID' });
+});
+
 test('rejects truncated/multiple output, empty/missing fields and skipped segment indices', () => {
     assert.throws(() => parseContent(validXml.slice(0, -10)), { code: 'CONTENT_TRUNCATED' });
     assert.throws(() => parseContent(validXml + validXml), { code: 'CONTENT_MULTIPLE' });

@@ -30,6 +30,58 @@ test('text before and after the original content block is preserved even when XM
     assert.equal(result.analysis.supplement.includes('<content'), false);
 });
 
+test('analysis uses the actual outline span when surrounding text mentions root tags', async () => {
+    const before = '<think>会以 `<content>` 和 `</content>` 交付；此处只是说明。</think>';
+    const after = '说明：<content> 表示大纲，</content> 是结束。';
+    for (const raw of [`${before}\n${xml}\n${after}`, `\`\`\`text\n${before}\n${xml}\n${after}\n\`\`\``]) {
+        const result = await request({ content: raw });
+        assert.equal(result.plot, '当面解释');
+        assert.equal(result.analysis.supplement, `${before}\n\n${after}`);
+        assert.ok(!result.xml.includes('此处只是说明'));
+        assert.ok(!result.analysis.supplement.includes('林澄停在门边'));
+    }
+});
+
+test('format failures retain only bounded view-only model text with credentials redacted', async () => {
+    const key = 'private-fixture-credential';
+    const raw = `开头 ${key} ${'文'.repeat(110_000)} 结尾`;
+    await assert.rejects(requestPlan({
+        baseUrl: 'https://planner.invalid/v1', model: 'fixture', apiKey: key, messages: [{ role: 'user', content: 'PRIVATE_REQUEST_PROMPT' }],
+        transport: async () => ({ ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: raw, reasoning_content: '返回分析', headers: { secret: 'HIDDEN_HEADER' } } }] }) }),
+    }), error => {
+        assert.equal(error.code, 'CONTENT_MISSING');
+        assert.ok(error.responsePreview.content.startsWith('开头 [已隐藏]'));
+        assert.ok(error.responsePreview.content.endsWith('结尾'));
+        assert.ok(error.responsePreview.content.length <= 100_000);
+        assert.equal(error.responsePreview.reasoning, '返回分析');
+        assert.equal(error.responsePreview.truncated, true);
+        assert.equal(error.responsePreview.finishReason, 'stop');
+        assert.doesNotMatch(JSON.stringify(error.responsePreview), /private-fixture|PRIVATE_REQUEST_PROMPT|HIDDEN_HEADER/);
+        assert.ok(!JSON.stringify(error).includes('返回分析'));
+        return true;
+    });
+});
+
+test('output-length and reasoning-only failures are inspectable but HTTP errors expose no provider body', async () => {
+    for (const [message, finishReason, code] of [[{ content: '<content><plot>未写完' }, 'length', 'OUTPUT_TRUNCATED'], [{ content: '', reasoning_content: '只有分析' }, 'stop', 'OUTPUT_REASONING_ONLY']]) {
+        await assert.rejects(requestPlan({ baseUrl: 'https://planner.invalid', model: 'fixture', messages: [{ role: 'user', content: 'input' }],
+            transport: async () => ({ ok: true, json: async () => ({ choices: [{ message, finish_reason: finishReason }] }) }),
+        }), error => {
+            assert.equal(error.code, code);
+            assert.equal(error.responsePreview.content, message.content);
+            assert.equal(error.responsePreview.finishReason, finishReason);
+            return true;
+        });
+    }
+    await assert.rejects(requestPlan({ baseUrl: 'https://planner.invalid', model: 'fixture', messages: [{ role: 'user', content: 'input' }],
+        transport: async () => new Response('PRIVATE_PROVIDER_BODY', { status: 503 }),
+    }), error => {
+        assert.equal(error.responsePreview, undefined);
+        assert.ok(!error.message.includes('PRIVATE_PROVIDER_BODY'));
+        return true;
+    });
+});
+
 test('a response containing only XML has empty analysis, including common outer fences', async () => {
     for (const raw of [xml, ` \n${xml}\n `, `\`\`\`xml\n${xml}\n\`\`\``, `~~~xml\r\n${xml}\r\n~~~`, `\`\`\`\`text\n${xml}\n\`\`\`\``]) {
         const result = await request({ content: raw });

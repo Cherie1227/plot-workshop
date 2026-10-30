@@ -1868,6 +1868,84 @@ test('manual fill uses only the outline and empty analysis remains explicitly em
     assert.deepEqual(f.plugin.state.planningAnalysis, { reasoning: '', supplement: '', truncated: false, edited: false });
 });
 
+test('tag mentions no longer block automatic writing and stay outside its prompt', async t => {
+    const marker = 'ANALYSIS_TAG_MENTION_ONLY';
+    const f = await fixture(t, { settings: { mode: 'auto' }, plannerMessage: { content: `<think>${marker}：用 <content> 标签。</think>\n${xml}\n说明 </content>。` } });
+    await f.plugin.onAction('generate', { input: f.input.value });
+    assert.equal(f.calls.writer.length, 1);
+    assert.ok(f.plugin.state.planningAnalysis.supplement.includes(marker));
+    assert.ok(!f.calls.writer[0].prompt.includes(marker));
+    assert.equal(f.plugin.state.planningFailure, null);
+});
+
+test('failed model text is inspectable and copyable without becoming a plan or persistent data', async t => {
+    const marker = 'FAILED_RESPONSE_VIEW_ONLY_3821';
+    const message = { content: xml };
+    const f = await fixture(t, { plannerMessage: message });
+    await f.plugin.onAction('generate', { input: f.input.value });
+    const previous = f.plugin.state.plan, count = f.plugin.state.planVersions.length;
+    message.content = `${marker}：只有普通文字。`; message.reasoning_content = `${marker}：接口分析。`;
+    assert.equal(await f.plugin.onAction('generate', { input: f.input.value }), false);
+    assert.equal(f.plugin.state.planningFailure.code, 'CONTENT_MISSING');
+    assert.equal(f.plugin.state.planningFailure.content, message.content);
+    assert.equal(f.plugin.state.planningFailure.reasoning, message.reasoning_content);
+    assert.equal(f.plugin.state.plan, previous);
+    assert.equal(f.plugin.state.planVersions.length, count);
+    assert.match(f.plugin.state.status, /最近失败响应/);
+    assert.equal(await f.plugin.onAction('confirmAndWrite'), false);
+    assert.equal(f.calls.writer.length, 0);
+    const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    const secureDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'isSecureContext');
+    let copied = '';
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { clipboard: { async writeText(text) { copied = text; } } } });
+    Object.defineProperty(globalThis, 'isSecureContext', { configurable: true, value: true });
+    t.after(() => {
+        if (navigatorDescriptor) Object.defineProperty(globalThis, 'navigator', navigatorDescriptor); else delete globalThis.navigator;
+        if (secureDescriptor) Object.defineProperty(globalThis, 'isSecureContext', secureDescriptor); else delete globalThis.isSecureContext;
+    });
+    await f.plugin.onAction('copyFailedResponse');
+    assert.ok(copied.includes(marker));
+    await f.plugin.onAction('exportBackup');
+    assert.ok(!(await f.downloads.at(-1).blob.text()).includes(marker));
+    for (const surface of [f.plugin.state.plan, f.plugin.state.rawPlan, f.plugin.state.planVersions, f.plugin.state.logs,
+        f.ctx.extensionSettings, f.ctx.chat, f.ctx.extensionPrompts, [...f.storage], [...f.localStorage]]) {
+        assert.ok(!JSON.stringify(surface).includes(marker));
+    }
+    await f.plugin.onAction('clearFailedResponse');
+    assert.equal(f.plugin.state.planningFailure, null);
+    await f.plugin.onAction('generate', { input: f.input.value });
+    assert.ok(f.plugin.state.planningFailure);
+    message.content = xml; delete message.reasoning_content;
+    await f.plugin.onAction('generate', { input: f.input.value });
+    assert.equal(f.plugin.state.planningFailure, null);
+    assert.ok(!JSON.stringify(f.calls.planner).includes(marker));
+});
+
+test('failed response previews clear on reload and chat switch', async t => {
+    const f = await fixture(t, { plannerMessage: { content: 'BAD_RESPONSE' } });
+    await f.plugin.onAction('generate', { input: f.input.value });
+    assert.ok(f.plugin.state.planningFailure);
+    await f.reload();
+    assert.equal(f.plugin.state.planningFailure, null);
+    await f.plugin.onAction('generate', { input: f.input.value });
+    assert.ok(f.plugin.state.planningFailure);
+    f.ctx.chatId = 'chat-b'; await f.events.emit('CHAT_CHANGED');
+    assert.equal(f.plugin.state.planningFailure, null);
+});
+
+test('a late failed response cannot repopulate diagnostics after switching chats', async t => {
+    let release;
+    const f = await fixture(t, { fetchMode: () => new Promise(resolve => { release = resolve; }) });
+    const pending = f.plugin.onAction('generate', { input: f.input.value });
+    await until(() => release, 'pending planner response');
+    f.ctx.chatId = 'chat-b'; await f.events.emit('CHAT_CHANGED');
+    release(new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: 'LATE_PRIVATE_RESPONSE' } }] })));
+    await pending;
+    assert.equal(f.plugin.state.planningFailure, null);
+    assert.equal(f.plugin.state.plan, null);
+    assert.equal(f.calls.writer.length, 0);
+});
+
 test('backup exports no credentials or raw memory; valid imports merge copies and imported drafts cannot write', async t => {
     const f = await fixture(t);
     await f.plugin.onAction('apiProfileSave', { name: '本地方案', apiKey: 'backup-private-key', rememberKey: true });
