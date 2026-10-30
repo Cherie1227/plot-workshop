@@ -3,6 +3,7 @@ import { normalizePreset, exportPreset, compilePreset } from './lib/preset.js';
 import { parseContent } from './lib/content.js';
 import { requestPlan, normalizeEndpoint, redactSecrets } from './lib/planner.js';
 import { polishMessages, validatePolish } from './lib/purify.js';
+import { patrolStory } from './lib/patrol.js';
 import * as nativeAnima from './lib/anima.js';
 import { createAnimaCleanupGuard } from './lib/anima-cleanup.js';
 import { fetchModelList, testApiConnection, requestDiagnosis } from './lib/api.js';
@@ -27,7 +28,7 @@ const newId = prefix => `${prefix}_${Date.now().toString(36)}_${Math.random().to
 const keyStorageName = id => `${STORE}:api-key:${id}`;
 const bookNames = input => Array.isArray(input) ? [...new Set(input.filter(name => typeof name === 'string' && name.trim() && name.length <= 500))] : [];
 // Execution switches do not change the content of an already completed outline.
-const planningSettings = settings => Object.fromEntries(Object.entries(settings).filter(([key]) => !['theme', 'fontSize', 'lineHeight', 'enabled', 'regeneratePolicy', 'autoOnSend', 'mode', 'polishEnabled', 'polishModel'].includes(key)));
+const planningSettings = settings => Object.fromEntries(Object.entries(settings).filter(([key]) => !['theme', 'fontSize', 'lineHeight', 'enabled', 'regeneratePolicy', 'autoOnSend', 'mode', 'polishEnabled', 'polishModel', 'inspectEnabled', 'inspectRounds'].includes(key)));
 // Labels and grouping display preferences do not change the compiled request.
 const outlinePreset = preset => ({
     characterId: preset.characterId,
@@ -122,6 +123,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         promptPreview: null, promptInspection: null, inspectionStale: true, diagnosis: null,
         hostCatalog: null, libraryBusy: false, libraryStatus: '', extraWorldbooks: bookNames(extraWorldbooksByChat[ctx.chatId]), importReview: null,
         status: '准备就绪', stage: 'idle', busy: false, awaitingReview: false, animaStatus: '尚未连接', animaChecking: false,
+        patrolNotices: [], patrolCarried: false,
         animaDetectedPath: '', animaDetectionStatus: '', animaDetectedVersion: '', logs: [], warnings: initialWarnings, undoDeletion: null, isPreview: false };
     readProfileSecret(activeApi.id);
     const runtimeLog = createRuntimeLog({ getSecrets: () => [...historicalSecrets, state.apiKey, ...[...secretCache.values()].map(item => item.key)], limit: 200 });
@@ -138,6 +140,9 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     let hostGenerating = false, destroyed = false;
     // Only the current page keeps this receipt; raw memory is never persisted in chat/settings.
     let pendingWriterReceipt = null, writerReceipt = null, writerReplay = null;
+    // One-shot patrol carryover: consumed by the next successful planning round.
+    let inspectionCarryover = '';
+    const patrolCache = { key: null, notices: [] };
     let quickActions = null;
     let entryPoints = null;
     const versionAnchors = new Map();
@@ -177,7 +182,30 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         state.inspectionStale = !snapshotCurrent(inspectionAnchor);
         if (state.promptPreview) state.promptPreview.valid = !state.inspectionStale && !!anchor;
         state.importReview = buildImportReview(state.preset);
+        refreshPatrol();
         view.render();
+    }
+    // Local rule patrol runs inside render with a cheap change key; results are
+    // advisory only and never enter any request unless the user carries them.
+    function refreshPatrol() {
+        if (destroyed) return;
+        if (state.settings.inspectEnabled === false) { state.patrolNotices = []; patrolCache.key = null; patrolCache.notices = []; return; }
+        let current;
+        try { current = getContext(); } catch { return; }
+        const previousPlanXml = writerReceipt && writerReceipt.chatId === current.chatId ? String(writerReceipt.plan?.xml || '') : '';
+        const groups = state.preset?.groups || [], mapping = state.preset?.promptGroups || {};
+        const tierKey = JSON.stringify([
+            groups.filter(group => group.id === 'outline_tiers' || group.id === 'outline_tone').map(group => [group.id, group.enabled !== false]),
+            (state.preset?.order || []).filter(entry => mapping[entry.identifier] === 'outline_tiers' || mapping[entry.identifier] === 'outline_tone').map(entry => [entry.identifier, entry.enabled !== false]),
+        ]);
+        const key = JSON.stringify([current.chatId, current.chat.length, String(current.chat.at(-1)?.mes ?? '').length,
+            state.plan?.xml ?? '', previousPlanXml, state.settings.inspectRounds, tierKey]);
+        if (patrolCache.key === key) { state.patrolNotices = patrolCache.notices; return; }
+        const notices = patrolStory({ chat: current.chat, currentPlan: state.plan, previousPlanXml, preset: state.preset,
+            rounds: Number(state.settings.inspectRounds) || 2 });
+        patrolCache.key = key; patrolCache.notices = notices;
+        state.patrolNotices = notices;
+        if (!notices.length) state.patrolCarried = false;
     }
     function currentSnapshot() {
         return { story: storySnapshot(getContext()), config: configSignature(), input: state.input, draft: draft(), worldRevision, animaConfig: animaConfigSignature() };
@@ -415,6 +443,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     }
     function restoreDraft() {
         state.plan = null; state.rawPlan = ''; state.planningAnalysis = null; state.planningFailure = null; anchor = null; memory = null;
+        inspectionCarryover = ''; state.patrolCarried = false; patrolCache.key = null;
         draftRound = null; restoredDraft = false;
         state.planVersions = []; state.diagnosis = null; state.promptPreview = null;
         state.promptInspection = null; inspectionAnchor = null; diagnosisAnchor = null; currentVersionId = null; versionAnchors.clear();
@@ -455,6 +484,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     }
     function compileRound(planningContext, recalled, target, extraBooks = { text: '', books: [] }) {
         const compiled = compilePreset(state.preset, { context: { ...planningContext,
+            inspectionNote: inspectionCarryover,
             extensionNotes: planningContext.extensionNotes ?? [],
             animaMemory: recalled.text, memoryParts: recalled.memoryParts, animaStatus: recalled.status === 'empty' ? 'empty' : 'success' }, targetLength: target });
         for (const book of extraBooks.books) {
@@ -528,6 +558,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         state.planVersions = [...state.planVersions, ...versions].slice(-20);
         state.extraWorldbooks = data.extraWorldbooks;
         state.plan = null; state.rawPlan = ''; state.planningAnalysis = null; state.planningFailure = null; anchor = null; memory = null; inspectionAnchor = null; diagnosisAnchor = null;
+        inspectionCarryover = ''; state.patrolCarried = false; patrolCache.key = null; state.patrolNotices = [];
         draftRound = null; restoredDraft = false;
         state.promptInspection = null; state.promptPreview = null; state.diagnosis = null; currentVersionId = null;
         resetDetection(); clearDeletionUndo(); clearInjection(getContext()); persist(); cacheDraft();
@@ -746,6 +777,8 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             }
         }
         state.plan = plan; state.rawPlan = plan.xml;
+        // The carried patrol note is consumed by exactly one successful planning round.
+        inspectionCarryover = ''; state.patrolCarried = false;
         state.planningAnalysis = analysis ? { ...analysis, edited: false } : { reasoning: '', supplement: '', truncated: false, edited: false };
         log('success', 'planner.request.completed', '本轮大纲已生成并通过格式校验。');
         anchor = { story: initialStory, baseStory, config: initialConfig, draft: initialDraft,
@@ -1069,6 +1102,13 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             }
             if (type === 'exportBackup') { exportBackup(); return; }
             if (type === 'importBackup') { importBackup(payload.text); return; }
+            if (type === 'carryInspection') {
+                if (!state.patrolNotices.length || state.patrolCarried) return;
+                inspectionCarryover = state.patrolNotices.join('\n');
+                state.patrolCarried = true;
+                log('info', 'patrol.carried', '本地巡检提示已带入下次规划，仅生效一轮。');
+                status('巡检提示已带入下次规划，仅生效一轮。'); return;
+            }
             if (type === 'apiKey') {
                 if (typeof payload.value !== 'string') throw new Error('API 密钥必须是文本。');
                 state.apiKey = payload.value; rememberSecret(payload.value);

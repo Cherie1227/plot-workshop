@@ -358,6 +358,11 @@
 .pw-steps li{flex:1;display:flex;align-items:center;justify-content:center;gap:7px;position:relative;color:var(--pw-muted);font-size:var(--pw-fs-meta);min-height:34px;border-bottom:1px solid var(--pw-line)}
 .pw-step-dot{display:none}
 .pw-steps .pw-step-active{color:var(--pw-accent);border-color:var(--pw-accent)}
+.pw-patrol{display:flex;flex-direction:column;gap:8px;margin:0 0 18px;padding:10px 14px;border:1px solid var(--pw-line);border-radius:var(--pw-radius);background:var(--pw-accent-soft)}
+.pw-patrol[hidden]{display:none}
+.pw-patrol-title{margin:0;font-size:var(--pw-fs-meta);color:var(--pw-accent);font-weight:600}
+.pw-patrol-list{margin:0;padding-left:18px;font-size:var(--pw-fs-meta);color:var(--pw-ink);display:flex;flex-direction:column;gap:4px}
+.pw-patrol .pw-button{align-self:flex-start;min-height:32px;font-size:var(--pw-fs-meta)}
 .pw-user-input{min-height:106px}
 .pw-generate-actions{display:flex;gap:10px;margin:16px 0 24px}
 .pw-generate-actions>.pw-primary{flex:1;max-width:250px}

@@ -549,7 +549,12 @@ export function createWorkbench({ getState, onAction }) {
     failedResponse.append(el('summary', '', '最近失败响应'), failedResponseMeta,
         el('p', 'pw-hint', '仅供排查，未作为大纲使用。只保留在本页，不进入正文请求、聊天、记忆或备份；重新生成、刷新或切换聊天后清除。'),
         el('h4', '', '返回文本'), failedResponseText, failedReasoningTitle, failedReasoningText, failedResponseActions);
-    outlinePage.append(pageHeading, steps, inputField, generationActions, failedResponse, planSection);
+    const patrolBox = el('div', 'pw-patrol');
+    patrolBox.hidden = true;
+    const patrolList = el('ul', 'pw-patrol-list');
+    const patrolCarry = button('带入下次规划', () => act('carryInspection'));
+    patrolBox.append(el('p', 'pw-patrol-title', '故事巡检'), patrolList, patrolCarry);
+    outlinePage.append(pageHeading, steps, patrolBox, inputField, generationActions, failedResponse, planSection);
 
     const promptEditorPage = el('section', 'pw-prompt-editor-page');
     const promptBack = button('返回', () => withUnsavedGuard(() => { resetEditor(); render(); restorePromptListPosition(); }), { className: 'pw-back', iconName: 'back' });
@@ -792,6 +797,14 @@ export function createWorkbench({ getState, onAction }) {
     polishSection.append(polishLabel);
     settingInput(polishSection, 'polishModel', '净化模型', 'text', '如 gemini-3-flash，留空不净化', undefined, { spellcheck: false });
     polishSection.append(el('p', 'pw-hint', '净化复用规划接口与密钥，由快速模型把大纲改写为平实直述：事实、决定、字段结构与交接标记保持不变，结构与标记校验不一致或请求失败时自动沿用原大纲。'));
+    const patrolSection = settingsSection('故事巡检');
+    const inspectLabel = el('label', 'pw-checkbox-label');
+    const inspectEnabled = control('checkbox');
+    inspectEnabled.addEventListener('change', () => { configDrafts.set('inspectEnabled', inspectEnabled.checked); settingsSaveStatus.textContent = '已修改，点击保存设置可确认当前配置。'; act('settings', { inspectEnabled: inspectEnabled.checked }); });
+    decorateCheckbox(inspectLabel, inspectEnabled, el('span', '', '在大纲页显示故事巡检提示'));
+    patrolSection.append(inspectLabel);
+    settingInput(patrolSection, 'inspectRounds', '连续轮数阈值', 'number', '2', '连续几轮命中同一条件才提示，范围 2—5。', { min: '2', max: '5', step: '1', inputMode: 'numeric' });
+    patrolSection.append(el('p', 'pw-hint', '纯本地规则检测，不调用模型：连续多轮正文无新信息、相邻两楼大纲原地踏步、长聊未启用任何档位或基调。结果只显示在大纲页顶部，不进入任何请求；点击「带入下次规划」才把提示作为一次性备注交给规划模型，仅生效一轮。'));
     const updateSection = settingsSection('扩展更新', true, settingsPanel);
     const updateVersion = el('p', 'pw-hint');
     const updatePhase = el('p', 'pw-update-phase');
@@ -1009,6 +1022,7 @@ export function createWorkbench({ getState, onAction }) {
         result.autoOnSend = autoOnSend.checked;
         result.readExtensionPrompts = readExtensionPrompts.checked;
         result.polishEnabled = polishEnabled.checked;
+        result.inspectEnabled = inspectEnabled.checked;
         return result;
     }
     function savedAppearance() {
@@ -1082,6 +1096,7 @@ export function createWorkbench({ getState, onAction }) {
         return modeSelect.value !== (settings.mode || 'review') || autoOnSend.checked !== Boolean(settings.autoOnSend)
             || readExtensionPrompts.checked !== Boolean(settings.readExtensionPrompts)
             || polishEnabled.checked !== Boolean(settings.polishEnabled)
+            || inspectEnabled.checked !== (settings.inspectEnabled !== false)
             || keyField.value !== (state.apiKey || '');
     }
     async function performUpdate(type) {
@@ -1754,11 +1769,17 @@ export function createWorkbench({ getState, onAction }) {
         if (!configDrafts.has('autoOnSend')) autoOnSend.checked = Boolean(settings.autoOnSend);
         if (!configDrafts.has('readExtensionPrompts')) readExtensionPrompts.checked = Boolean(settings.readExtensionPrompts);
         if (!configDrafts.has('polishEnabled')) polishEnabled.checked = Boolean(settings.polishEnabled);
+        if (!configDrafts.has('inspectEnabled')) inspectEnabled.checked = settings.inspectEnabled !== false;
         modeHint.textContent = settings.mode === 'auto' ? '大纲通过格式检查后直接交给主模型。' : settings.mode === 'manual' ? '只生成大纲，不自动注入主请求。' : '大纲生成后暂停，确认后再交给主模型。';
         generateButton.disabled = !enabled || isBlocked(state);
         generateButton.querySelector('span').textContent = state.busy ? '正在处理…' : state.animaChecking ? '检测记忆扩展…' : state.preview ? '载入示例大纲' : '生成大纲';
         cancelButton.disabled = !state.busy;
         input.disabled = isBlocked(state);
+        const patrolNotices = Array.isArray(state.patrolNotices) ? state.patrolNotices : [];
+        patrolBox.hidden = !patrolNotices.length;
+        patrolList.replaceChildren(...patrolNotices.map(text => el('li', '', text)));
+        patrolCarry.disabled = !patrolNotices.length || !!state.patrolCarried || isBlocked(state);
+        patrolCarry.querySelector('span').textContent = state.patrolCarried ? '已带入，仅生效一轮' : '带入下次规划';
         footerStatus.textContent = typeof state.status === 'string' ? state.status : state.status?.message || '准备就绪';
         footerDot.classList.toggle('pw-busy', Boolean(state.busy));
         animaStatus.textContent = typeof state.animaStatus === 'string' ? state.animaStatus : state.animaStatus?.message || '尚未检测';
