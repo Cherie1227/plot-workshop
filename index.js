@@ -907,6 +907,9 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             const run = writerReplay;
             if (type !== 'swipe' || !run.started || run.intercepted || run.failed || !receiptCurrent(run.receipt)) {
                 run.failed = true; abort(true); clearInjection(getContext());
+                // A dead manual run must not linger: no GENERATION_ENDED follows an
+                // interceptor abort, and a leaked run would fail every later request.
+                if (run.manual) { disposeReuse?.(); disposeReuse = null; writerReplay = null; anima.clearAnimaGeneration(generationToken); generationToken = undefined; }
                 fail(new Error('正文重写上下文已变化，或酒馆尝试连续自动重写；已停止本次请求。')); return;
             }
             // A manual swipe may target an older floor; only the floor that owns
@@ -1356,14 +1359,17 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             const receipt = writerReceipt;
             const run = { receipt, started: true, intercepted: false, ended: false, failed: false, manual: true,
                 nextSwipe: receipt.message.swipes?.length || 1 };
+            // The host emits GENERATION_STARTED synchronously and never awaits
+            // listeners: its generate interceptor runs before any await here
+            // resolves, so the replay run must be fully armed synchronously.
+            writerReplay = run;
+            disposeReuse = anima.skipNextAnimaRecall({ type: 'swipe', matches: () => writerReplay === run && !run.failed && receiptCurrent(receipt) });
+            generationToken = anima.beginAnimaGeneration();
+            log('info', 'writer.reroll.armed', '本次滑动沿用本楼层的固定大纲，只调用正文模型。');
             try {
                 await anima.installAnimaObserver({ settings: settingsForAnima(true) });
-                if (!receiptCurrent(receipt)) throw new Error('滑动前聊天已变化。');
-                writerReplay = run;
-                disposeReuse = anima.skipNextAnimaRecall({ type: 'swipe', matches: () => writerReplay === run && !run.failed && receiptCurrent(receipt) });
-                generationToken = anima.beginAnimaGeneration();
-                log('info', 'writer.reroll.armed', '本次滑动沿用本楼层的固定大纲，只调用正文模型。');
-            } catch { writerReplay = null; disposeReuse?.(); disposeReuse = null; }
+                if (writerReplay === run && !run.intercepted && !receiptCurrent(receipt)) run.failed = true;
+            } catch { run.failed = true; }
             return;
         }
         if (dryRun || (!state.settings.autoOnSend && !resuming) || type === 'quiet' || type === 'impersonate') return;

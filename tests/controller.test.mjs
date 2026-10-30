@@ -38,6 +38,8 @@ async function fixture(t, { settings = {}, saved, fetchMode = 'success', api, de
         on(name, fn) { if (!handlers.has(name)) handlers.set(name, []); handlers.get(name).push(fn); },
         removeListener(name, fn) { handlers.set(name, (handlers.get(name) || []).filter(f => f !== fn)); },
         async emit(name, ...args) { for (const handler of handlers.get(name) || []) await handler(...args); },
+        // Real hosts dispatch events synchronously without awaiting listeners.
+        fire(name, ...args) { for (const handler of handlers.get(name) || []) handler(...args); },
     };
     const calls = { planner: [], writer: [], replays: [], saves: 0, recalled: 0, skippedRecalls: 0, invalidated: 0, aborted: 0, detection: [], observers: [], recalls: [], reloads: 0 };
     const ctx = {
@@ -857,6 +859,32 @@ test('manual swipe under the reuse policy reuses the frozen outline without repl
     assert.equal(f.ctx.chat.at(-1).swipes[0], originalReply);
     assert.equal(f.plugin.canRewrite(), true);
     assert.equal(f.ctx.extensionPrompts[INJECTION_KEY], undefined);
+});
+
+test('manual swipe arms synchronously: hosts dispatch GENERATION_STARTED without awaiting listeners', async t => {
+    const f = await fixture(t, { settings: { regeneratePolicy: 'reuse' } });
+    await f.plugin.onAction('generate', { input: f.input.value });
+    await f.plugin.onAction('confirmAndWrite');
+    const originalPrompt = f.calls.writer[0].prompt;
+    const message = f.ctx.chat.at(-1);
+    message.swipes ??= [message.mes];
+    const nextSwipe = message.swipes.length;
+    message.swipe_id = nextSwipe;
+    let aborted = false;
+    // The real host fires GENERATION_STARTED synchronously; its interceptor call
+    // reaches the plugin before any await inside the listener could resolve.
+    f.events.fire('GENERATION_STARTED', 'swipe', {}, false);
+    await f.plugin.intercept(f.ctx.chat.slice(0, -1), 32000, () => { aborted = true; }, 'swipe');
+    assert.equal(aborted, false);
+    assert.equal(f.ctx.extensionPrompts[INJECTION_KEY]?.value, originalPrompt);
+    message.mes = `${message.mes}（候选）`; message.swipes[nextSwipe] = message.mes;
+    await f.events.emit('GENERATION_ENDED');
+    assert.equal(f.ctx.chat.at(-1).swipes.length, 2);
+    assert.equal(f.ctx.extensionPrompts[INJECTION_KEY], undefined);
+    // A later swipe still re-arms cleanly after the previous run completed.
+    const again = await manualSwipe(f);
+    assert.equal(again.aborted, false);
+    assert.equal(again.injected, originalPrompt);
 });
 
 test('manual swipe without the reuse policy stays native: bare when idle, guided abort with auto-plan', async t => {
