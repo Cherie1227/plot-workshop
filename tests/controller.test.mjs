@@ -887,6 +887,25 @@ test('manual swipe arms synchronously: hosts dispatch GENERATION_STARTED without
     assert.equal(again.injected, originalPrompt);
 });
 
+test('manual swipe after a page reload reports the missing receipt in the runtime log', async t => {
+    const f = await fixture(t, { settings: { regeneratePolicy: 'reuse', autoOnSend: true } });
+    await f.plugin.onAction('generate', { input: f.input.value });
+    await f.plugin.onAction('confirmAndWrite');
+    // Receipts are session-scoped by design: a reload drops the frozen outline.
+    await f.reload();
+    const message = f.ctx.chat.at(-1);
+    message.swipes ??= [message.mes];
+    message.swipe_id = message.swipes.length;
+    let aborted = false;
+    f.events.fire('GENERATION_STARTED', 'swipe', {}, false);
+    await f.plugin.intercept(f.ctx.chat.slice(0, -1), 32000, () => { aborted = true; }, 'swipe');
+    assert.equal(aborted, true);
+    const skip = f.plugin.state.logs.find(entry => entry.event === 'writer.reroll.arm_skipped');
+    assert.ok(skip, 'skip reason must be logged');
+    assert.ok(skip.message.includes('no-receipt'), skip.message);
+    assert.equal(f.ctx.extensionPrompts[INJECTION_KEY], undefined);
+});
+
 test('manual swipe without the reuse policy stays native: bare when idle, guided abort with auto-plan', async t => {
     const f = await fixture(t);
     await f.plugin.onAction('generate', { input: f.input.value });

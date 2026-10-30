@@ -936,7 +936,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             return;
         }
         if (!state.settings.autoOnSend || type === 'quiet' || type === 'impersonate') return;
-        if (!normalType(type) && type !== 'regenerate') { abort(true); fail(new Error(type === 'swipe' ? '本楼层没有可沿用的有效大纲。要用同一大纲出候选，请将设置中的“酒馆重新生成”改为“优先沿用大纲，没有则生成”；要重新规划请使用酒馆的“重新生成”。' : '自动规划支持普通发送和酒馆重新生成。续写请先关闭“发送时自动规划”。')); return; }
+        if (!normalType(type) && type !== 'regenerate') { abort(true); fail(new Error(type === 'swipe' ? '本楼层没有可沿用的有效大纲。沿用只覆盖本次页面会话中由 Vespera 生成、且仍是最新一条的正文——页面刷新或切换聊天后，请先重新生成一次正文再滑动；并确认设置中“酒馆重新生成”为“优先沿用大纲，没有则生成”。要重新规划请使用酒馆的“重新生成”。' : '自动规划支持普通发送和酒馆重新生成。续写请先关闭“发送时自动规划”。')); return; }
         if (state.busy || state.apiBusy || state.animaChecking) { abort(true); fail(new Error('已有规划、API 操作或 Anima 检测正在进行，请先完成或取消。')); return; }
         let regenerationFallback = false, previousPlan = null;
         try {
@@ -1371,6 +1371,19 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
                 if (writerReplay === run && !run.intercepted && !receiptCurrent(receipt)) run.failed = true;
             } catch { run.failed = true; }
             return;
+        }
+        // Arming did not happen: record exactly which gate rejected this swipe so
+        // field reports can name the cause instead of guessing.
+        if (!dryRun && type === 'swipe' && state.settings.regeneratePolicy === 'reuse') {
+            const reasons = [];
+            if (resuming) reasons.push('resuming');
+            if (state.update.phase === 'installing') reasons.push('installing');
+            if (state.busy) reasons.push('busy');
+            if (state.apiBusy) reasons.push('apiBusy');
+            if (state.animaChecking) reasons.push('animaChecking');
+            if (!writerReceipt) reasons.push('no-receipt');
+            else if (!receiptCurrent()) reasons.push('receipt-stale');
+            if (reasons.length) log('info', 'writer.reroll.arm_skipped', `本次滑动未能沿用大纲：${reasons.join(',')}。`);
         }
         if (dryRun || (!state.settings.autoOnSend && !resuming) || type === 'quiet' || type === 'impersonate') return;
         clearInjection(getContext()); preparationError = null;
