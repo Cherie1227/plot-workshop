@@ -25,7 +25,8 @@ const connectionSettings = input => Object.fromEntries(API_FIELDS.map(key => [ke
 const newId = prefix => `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 const keyStorageName = id => `${STORE}:api-key:${id}`;
 const bookNames = input => Array.isArray(input) ? [...new Set(input.filter(name => typeof name === 'string' && name.trim() && name.length <= 500))] : [];
-const planningSettings = settings => Object.fromEntries(Object.entries(settings).filter(([key]) => !['theme', 'fontSize', 'lineHeight', 'enabled', 'regeneratePolicy'].includes(key)));
+// Execution switches do not change the content of an already completed outline.
+const planningSettings = settings => Object.fromEntries(Object.entries(settings).filter(([key]) => !['theme', 'fontSize', 'lineHeight', 'enabled', 'regeneratePolicy', 'autoOnSend', 'mode'].includes(key)));
 // Labels and grouping display preferences do not change the compiled request.
 const outlinePreset = preset => ({
     characterId: preset.characterId,
@@ -166,7 +167,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     state.update = updater.state;
     const hostInput = () => document.querySelector('#send_textarea');
     const draft = () => String(hostInput()?.value ?? '');
-    const configSignature = (outlineOnly = false) => JSON.stringify({ settings: Object.fromEntries(Object.entries(planningSettings(state.settings)).filter(([key]) => !outlineOnly || !['autoOnSend', 'mode'].includes(key))), preset: outlineOnly ? outlinePreset(state.preset) : state.preset, apiProfileId: state.activeApiProfileId, extraWorldbooks: state.extraWorldbooks,
+    const configSignature = (outlineOnly = false) => JSON.stringify({ settings: planningSettings(state.settings), preset: outlineOnly ? outlinePreset(state.preset) : state.preset, apiProfileId: state.activeApiProfileId, extraWorldbooks: state.extraWorldbooks,
         presetId: state.activePresetId, animaPath: state.animaDetectedPath || state.settings.animaPath });
     const animaConfigSignature = () => JSON.stringify(getContext().extensionSettings.anima_memory_system ?? null);
     const settingsForAnima = inputAlreadyInChat => ({ frontendPath: state.animaDetectedPath || state.settings.animaPath, inputAlreadyInChat });
@@ -552,13 +553,30 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         // Keep this-turn recalled memory: retrying the same turn must not spend Echo retention again.
         status(message);
     }
-    function checkAnchor({ afterSubmission = false } = {}) {
+    function checkAnchor({ afterSubmission = false, reconcileSubmission = false } = {}) {
         if (!anchor || !state.plan) throw new Error('当前大纲尚未绑定本轮输入；恢复的草稿可点击“确认并扩写”核对后使用。');
-        const current = getContext();
-        const signature = storySnapshot(current, afterSubmission && !anchor.committed ? { dropLastInput: anchor.input } : {});
-        if (signature !== anchor.story || configSignature() !== anchor.config || state.input !== anchor.input
-            || (!anchor.restoredDraft && (anchor.worldRevision !== worldRevision || anchor.animaConfig !== animaConfigSignature()))) throw new Error('聊天、输入、世界书、预设或设置已变化，请重新生成本轮大纲。');
-        if (!afterSubmission && draft() !== anchor.draft) throw new Error('酒馆输入框已经改变，请重新规划，以免覆盖新输入。');
+        const current = getContext(), currentStory = storySnapshot(current), last = current.chat.at(-1);
+        // A failed main request may already have appended this exact user turn.
+        // Reconcile only on explicit confirmation, and validate the entire prefix
+        // plus content settings before changing the anchor or clearing the composer.
+        const submitted = reconcileSubmission && !afterSubmission && !anchor.committed && currentStory !== anchor.story
+            && last?.is_user && !last.is_system && String(last.mes) === anchor.input;
+        const signature = !anchor.committed && (afterSubmission || submitted)
+            ? storySnapshot(current, { dropLastInput: anchor.input }) : currentStory;
+        const reject = (code, message) => { throw Object.assign(new Error(message), { code }); };
+        if (state.input !== anchor.input) reject('DRAFT_INPUT_CHANGED', '本轮输入已变化，与这份大纲不一致，请重新生成本轮大纲。');
+        if (signature !== anchor.story) reject('DRAFT_CONTEXT_CHANGED', '聊天记录或角色资料已变化，或本轮已有正文，请重新生成本轮大纲。');
+        if (configSignature() !== anchor.config) reject('DRAFT_CONFIG_CHANGED', '规划预设、API、正文目标或注入设置已变化，请重新生成本轮大纲。');
+        if (!anchor.restoredDraft && anchor.worldRevision !== worldRevision) reject('DRAFT_WORLDBOOK_CHANGED', '世界书资料已变化，请重新生成本轮大纲。');
+        if (!anchor.restoredDraft && anchor.animaConfig !== animaConfigSignature()) reject('DRAFT_ANIMA_CHANGED', 'Anima 设置已变化，请重新生成本轮大纲。');
+        const composer = draft();
+        if (!afterSubmission && (submitted ? composer !== '' && composer !== anchor.input : composer !== anchor.draft)) {
+            reject('DRAFT_COMPOSER_CHANGED', '酒馆输入框已经改变，请先处理新输入，以免覆盖。');
+        }
+        if (submitted) {
+            anchor = { ...anchor, story: currentStory, committed: true, draft: composer };
+            log('info', 'planner.input.committed', '已核对本轮输入进入聊天，继续沿用大纲，不重复发送用户消息。');
+        }
     }
     function resumeDraft() {
         const current = getContext();
@@ -714,8 +732,8 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         if (state.apiBusy || state.animaChecking) throw new Error('请先完成或取消 API 操作或 Anima 检测。');
         if (!gate && (state.busy || hostGenerating || (typeof getContext().isGenerating === 'function' ? getContext().isGenerating() : getContext().isGenerating))) throw new Error('当前操作尚未结束。');
         if (!anchor && restoredDraft) resumeDraft();
-        checkAnchor();
-        if (state.settings.mode === 'manual') throw new Error('当前为仅生成大纲模式。可以复制或填入输入框；自动扩写需切换模式后重新规划。');
+        checkAnchor({ reconcileSubmission: !gate });
+        if (state.settings.mode === 'manual') throw new Error('当前为仅生成大纲模式。请切换为查看后确认或自动扩写，保存后即可确认这份大纲。');
         if (gate) { gate.resolve(true); view.close(); return; }
         if (state.busy) throw new Error('当前操作尚未结束。');
         if (state.input.trimStart().startsWith('/')) throw new Error('本轮输入以 / 开头，会被酒馆作为命令处理。请将故事输入与酒馆命令分开。');
@@ -730,15 +748,24 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             // generation hook instead of claiming an unavailable memory snapshot.
             if (!anchor.restoredDraft) disposeReuse = anima.skipNextAnimaRecall({ matches: sameResumingStory });
             hostInput().value = anchor.committed ? '' : state.input;
+            // Remember our own composer change even if the host fails before sending.
+            anchor = { ...anchor, draft: hostInput().value };
             hostInput().dispatchEvent(new Event('input', { bubbles: true }));
         }
         state.stage = 'writing'; status('已确认，正在调用酒馆主模型扩写…');
         log('info', 'writer.request.started', '已确认大纲，开始调用酒馆主模型扩写。');
         view.close();
         try { await current.generate(generationType); }
+        catch (error) {
+            if (getContext().chatId === anchor?.chatId && state.plan) state.stage = 'review';
+            throw error;
+        }
         finally {
             disposeReuse?.(); disposeReuse = null; resuming = null; writerActive = false;
             pendingWriterReceipt = null;
+            // Some failed host requests reject without a GENERATION_ENDED event.
+            const generating = getContext().isGenerating;
+            hostGenerating = typeof generating === 'function' ? !!generating() : generating === true;
             clearInjection(getContext()); state.busy = false; render();
         }
     }
