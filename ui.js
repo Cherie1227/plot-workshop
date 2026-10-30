@@ -432,6 +432,16 @@ export function createWorkbench({ getState, onAction }) {
     for (const drawer of drawers) { drawer.hidden = true; presetDrawers.append(drawer); }
     presetToolbar.append(button('管理', () => togglePresetDrawer(manageDrawer), { iconName: 'settings' }), button('导入', () => togglePresetDrawer(importDrawer), { iconName: 'upload' }), button('检查', () => togglePresetDrawer(checkDrawer), { iconName: 'file' }), newPromptButton);
     presets.append(presetHead, presetSelectRow, presetDeleteNotice, presetSaveStatus, presetToolbar, presetDrawers, importInput, presetUnsaved, undoNotice, groupLeaveNotice, groupRangePanel, presetGroups, presetWarnings);
+    const variableHelp = el('details', 'pw-import-review-help');
+    variableHelp.append(el('summary', '', '变量宏用法'),
+        el('p', 'pw-hint', '内置、自建和导入预设均可使用。条目按启用顺序展开，先定义再引用；关闭条目或分组不会执行变量操作。'),
+        el('p', 'pw-hint', '前面的启用条目：定义与追加'),
+        el('pre', 'pw-analysis-text', '{{setvar::本轮规则::保留人物已知与未知的边界。}}\n{{addvar::本轮规则::\n关系变化须有本轮经历支撑。}}'),
+        el('p', 'pw-hint', '后面的启用条目：引用'),
+        el('pre', 'pw-analysis-text', '本轮必须遵守：\n{{getvar::本轮规则}}'),
+        el('p', 'pw-hint', '支持 setvar/getvar、addvar、incvar/decvar、hasvar/deletevar 及对应 global 版本。addvar 追加文本或累加数值；赋值和追加本身不输出内容。'),
+        el('p', 'pw-hint', '变量仅在本次规划编译内共享，每次重新展开都会重置，包括 global 版本；不读写酒馆的聊天变量。可在“本轮读取与用量”查看展开结果。'));
+    presets.append(variableHelp);
     const inspectionDetails = el('details', 'pw-inspection pw-advanced');
     inspectionDetails.append(el('summary', '', '本轮读取与用量'));
     const inspectButton = button('读取本轮资料', () => act('inspectPrompts', { input: input.value }), { className: 'pw-inspect-button' });
