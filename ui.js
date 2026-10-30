@@ -1,6 +1,5 @@
 import { createWorkshopTools } from './tools-ui.js';
 import { estimatePromptText } from './lib/prompt-inspector.js';
-import { STORY_PACES, RELATIONSHIP_PACES } from './lib/host.js';
 
 /** Mobile-first, dependency-free workbench. No model or preset text is interpreted as HTML. */
 const ICONS = {
@@ -739,19 +738,7 @@ export function createWorkbench({ getState, onAction }) {
     const wordFields = el('div', 'pw-word-fields');
     settingInput(wordFields, 'minWords', '最少字数', 'number', '未设置', undefined, { min: '1', step: '1', inputMode: 'numeric' });
     settingInput(wordFields, 'maxWords', '最多字数', 'number', '未设置', undefined, { min: '1', step: '1', inputMode: 'numeric' });
-    lengthSection.append(wordFields, el('p', 'pw-hint', '规划与扩写使用同一份目标'));
-    const storyPace = settingSelect(lengthSection, 'storyPace', '剧情推进', Object.entries(STORY_PACES).map(([value, pace]) => [value, pace.label]));
-    const storyPaceHint = el('p', 'pw-hint pw-story-pace-hint'); storyPaceHint.id = 'pw-story-pace-hint';
-    storyPace.setAttribute('aria-describedby', storyPaceHint.id);
-    function renderStoryPaceHint() { storyPaceHint.textContent = (STORY_PACES[storyPace.value] || STORY_PACES.preset).description; }
-    storyPace.addEventListener('change', renderStoryPaceHint);
-    lengthSection.append(storyPaceHint);
-    const relationshipPace = settingSelect(lengthSection, 'relationshipPace', '感情推进', Object.entries(RELATIONSHIP_PACES).map(([value, pace]) => [value, pace.label]));
-    const relationshipPaceHint = el('p', 'pw-hint pw-relationship-pace-hint'); relationshipPaceHint.id = 'pw-relationship-pace-hint';
-    relationshipPace.setAttribute('aria-describedby', relationshipPaceHint.id);
-    function renderRelationshipPaceHint() { relationshipPaceHint.textContent = (RELATIONSHIP_PACES[relationshipPace.value] || RELATIONSHIP_PACES.preset).description + ' 各档都需经历支撑，不跳过关系阶段。'; }
-    relationshipPace.addEventListener('change', renderRelationshipPaceHint);
-    lengthSection.append(relationshipPaceHint);
+    lengthSection.append(wordFields, el('p', 'pw-hint', '规划与扩写使用同一份目标。剧情推进、感情推进与情绪强度档位在预设页的「档位｜推进与情绪强度」分组中开关，未启用任何档位时由规划模型按场景性质判断。'));
     const modeSection = settingsSection('使用方式');
     const modeSelect = el('select', 'pw-input');
     modeSelect.setAttribute('aria-label', '使用方式');
@@ -1075,7 +1062,7 @@ export function createWorkbench({ getState, onAction }) {
         const state = getState();
         if (groupDraftDirty() || dirtyPrompt || dirtyPlan || presetNameDirty || appearanceDirty || apiDirty()) return true;
         const settings = state.settings || {};
-        if (Object.entries(settingsFields).some(([key, node]) => node.type === 'checkbox' ? node.checked !== Boolean(settings[key]) : node.value !== String(settings[key] ?? (['storyPace', 'relationshipPace'].includes(key) ? 'preset' : '')))) return true;
+        if (Object.entries(settingsFields).some(([key, node]) => node.type === 'checkbox' ? node.checked !== Boolean(settings[key]) : node.value !== String(settings[key] ?? ''))) return true;
         return modeSelect.value !== (settings.mode || 'review') || autoOnSend.checked !== Boolean(settings.autoOnSend)
             || keyField.value !== (state.apiKey || '');
     }
@@ -1745,10 +1732,6 @@ export function createWorkbench({ getState, onAction }) {
             if (node.type === 'checkbox') node.checked = Boolean(settings[key]);
             else setInputValue(node, settings[key]);
         }
-        if (!configDrafts.has('storyPace')) storyPace.value = Object.hasOwn(STORY_PACES, settings.storyPace) ? settings.storyPace : 'preset';
-        renderStoryPaceHint();
-        if (!configDrafts.has('relationshipPace')) relationshipPace.value = Object.hasOwn(RELATIONSHIP_PACES, settings.relationshipPace) ? settings.relationshipPace : 'preset';
-        renderRelationshipPaceHint();
         if (!configDrafts.has('mode')) modeSelect.value = settings.mode || 'review';
         if (!configDrafts.has('autoOnSend')) autoOnSend.checked = Boolean(settings.autoOnSend);
         modeHint.textContent = settings.mode === 'auto' ? '大纲通过格式检查后直接交给主模型。' : settings.mode === 'manual' ? '只生成大纲，不自动注入主请求。' : '大纲生成后暂停，确认后再交给主模型。';

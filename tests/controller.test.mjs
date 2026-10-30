@@ -483,8 +483,6 @@ test('native regenerate still replans after prompt, switch, pace or request sett
             const items = f.plugin.state.preset.order.filter(item => f.plugin.state.preset.promptGroups[item.identifier] === 'outline_voice');
             return f.plugin.onAction('movePrompt', { id: items.at(-1).identifier, beforeId: items[0].identifier, groupId: 'outline_voice' });
         },
-        'story pace': f => f.plugin.onAction('settings', { storyPace: 'fast' }),
-        'relationship pace': f => f.plugin.onAction('settings', { relationshipPace: 'slow' }),
         'output limit': f => f.plugin.onAction('settings', { maxTokens: '60000' }),
         stream: f => f.plugin.onAction('settings', { stream: false }),
     };
@@ -556,7 +554,7 @@ test('verified Anima post-generation container cleanup preserves native regenera
     assert.equal(f.plugin.state.logs.some(entry => entry.event === 'planner.reuse.skipped'), false);
     assert.doesNotMatch(JSON.stringify(f.plugin.state.logs), /verified-memory|不可改动的世界规则/);
     // A same-round replan can reuse recalled memory after cleanup too.
-    await f.plugin.onAction('settings', { storyPace: 'fast' }); await f.ctx.generate('regenerate');
+    await f.plugin.onAction('settings', { minWords: '1600' }); await f.ctx.generate('regenerate');
     await f.events.emit('WORLDINFO_UPDATED', 'bound-book', structuredClone(book));
     await f.ctx.generate('regenerate');
     assert.equal(f.calls.planner.length, 2); assert.equal(f.calls.recalled, 1); assert.equal(f.calls.writer.length, 4);
@@ -1603,23 +1601,21 @@ test('stream mode defaults on, saves per profile and follows all completion acti
     assert.deepEqual(diagnosed, [false, true]);
 });
 
-test('story pace and relationship pace save independently and reach planner and writer without a word target', async t => {
+test('word target saves and reaches planner and writer; retired pace settings are dropped', async t => {
     const f = await fixture(t);
-    await f.plugin.onAction('saveSettings', { settings: { storyPace: 'fast', relationshipPace: 'slow', minWords: '', maxWords: '', mode: 'auto' }, rememberKey: false });
-    assert.equal(f.ctx.extensionSettings.plot_workshop.settings.storyPace, 'fast');
-    assert.equal(f.ctx.extensionSettings.plot_workshop.settings.relationshipPace, 'slow');
+    await f.plugin.onAction('saveSettings', { settings: { minWords: '1500', maxWords: '2000', storyPace: 'fast', relationshipPace: 'slow', mode: 'auto' }, rememberKey: false });
+    assert.equal(f.ctx.extensionSettings.plot_workshop.settings.minWords, '1500');
+    assert.equal(f.ctx.extensionSettings.plot_workshop.settings.storyPace, undefined);
     await f.reload();
-    assert.equal(f.plugin.state.settings.storyPace, 'fast');
-    assert.equal(f.plugin.state.settings.relationshipPace, 'slow');
-    assert.equal(f.plugin.state.settings.minWords, '');
+    assert.equal(f.plugin.state.settings.minWords, '1500');
+    assert.equal(f.plugin.state.settings.storyPace, undefined);
     await f.plugin.onAction('generate', { input: f.input.value });
     const planner = f.calls.planner[0].body.messages.map(message => message.content).join('\n');
-    assert.match(planner, /本轮剧情推进：快/);
-    assert.match(planner, /本轮感情推进：慢/);
+    assert.match(planner, /1500—2000/);
+    assert.doesNotMatch(planner, /本轮剧情推进|本轮感情推进/);
     assert.equal(f.calls.writer.length, 1);
-    assert.match(f.calls.writer[0].prompt, /本轮剧情推进：快/);
-    assert.match(f.calls.writer[0].prompt, /本轮感情推进：慢/);
-    assert.match(f.calls.writer[0].prompt, /不固定事件数/);
+    assert.match(f.calls.writer[0].prompt, /1500—2000/);
+    assert.doesNotMatch(f.calls.writer[0].prompt, /本轮剧情推进|本轮感情推进/);
 });
 
 test('API profiles migrate old connection settings, save explicitly, and keep independent secrets in memory', async t => {

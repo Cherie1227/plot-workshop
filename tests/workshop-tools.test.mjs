@@ -7,18 +7,13 @@ const xml = '<content><plot>他在门口等候。</plot><characters><character n
 const preset = () => ({ name: '规划', prompts: [{ identifier: 'one', name: '提示词', content: '只规划本轮。', role: 'system', enabled: false }], prompt_order: [{ character_id: 100001, order: [{ identifier: 'one', enabled: false }] }], extensions: { plot_workshop: { schema_version: 1, preserve_prompt_selection: true }, executable: { script: 'never execute', key: 'preset-secret' } } });
 const backup = () => ({ format: 'huapi-backup', version: 1, settings: {}, apiProfiles: [], presetLibrary: [], versions: [] });
 
-test('backup preserves selected story pace and older backups default to following the preset', () => {
-    for (const storyPace of ['preset', 'immersive', 'slow', 'medium', 'fast']) {
-        const source = backup(); source.settings.storyPace = storyPace;
-        assert.equal(sanitizeBackup(source).settings.storyPace, storyPace);
-    }
-    assert.equal(sanitizeBackup(backup()).settings.storyPace, 'preset');
-    assert.equal(sanitizeBackup(backup()).settings.relationshipPace, 'preset');
-    for (const relationshipPace of ['preset', 'slow', 'medium', 'fast']) {
-        const source = backup(); source.settings = { storyPace: 'fast', relationshipPace };
-        const restored = sanitizeBackup(source).settings;
-        assert.equal(restored.storyPace, 'fast'); assert.equal(restored.relationshipPace, relationshipPace);
-    }
+test('backup drops retired pace settings and keeps supported fields', () => {
+    const source = backup();
+    source.settings = { storyPace: 'fast', relationshipPace: 'slow', minWords: '1200' };
+    const restored = sanitizeBackup(source).settings;
+    assert.equal(restored.storyPace, undefined);
+    assert.equal(restored.relationshipPace, undefined);
+    assert.equal(restored.minWords, '1200');
 });
 
 test('backup preserves stream mode per API and rejects non-boolean switches', () => {

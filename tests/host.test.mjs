@@ -41,52 +41,17 @@ test('prose target validates ranges and keeps absent targets unspecified', () =>
     for (const settings of [{ minWords: 0 }, { maxWords: -1 }, { minWords: 1.5 }, { maxWords: 'NaN' }, { minWords: 'Infinity' }, { minWords: 2001, maxWords: 2000 }, { maxWords: Number.MAX_SAFE_INTEGER + 1 }]) assert.throws(() => proseTarget(settings));
 });
 
-test('story pace defaults to preset and survives settings serialization without accepting unknown choices', () => {
-    assert.equal(DEFAULT_SETTINGS.storyPace, 'preset');
-    assert.equal(cleanSettings().storyPace, 'preset');
-    for (const storyPace of ['preset', 'immersive', 'slow', 'medium', 'fast']) {
-        const stored = JSON.parse(JSON.stringify(cleanSettings({ storyPace })));
-        assert.equal(cleanSettings(stored).storyPace, storyPace);
-    }
-    for (const storyPace of ['FAST', '', 'unknown', '__proto__', null, 3, {}]) assert.equal(cleanSettings({ storyPace }).storyPace, 'preset');
-});
-
-test('selected story pace reaches the shared target even without a word count; preset adds no pace rule', () => {
+test('pace settings are retired: pacing is controlled by preset tier entries only', () => {
+    assert.equal(DEFAULT_SETTINGS.storyPace, undefined);
+    assert.equal(DEFAULT_SETTINGS.relationshipPace, undefined);
+    assert.equal(cleanSettings({ storyPace: 'fast', relationshipPace: 'slow' }).storyPace, undefined);
     const legacy = proseTarget({ minWords: '1500', maxWords: '2000' });
-    assert.equal(proseTarget({ storyPace: 'preset' }), '');
-    assert.equal(proseTarget({ minWords: '1500', maxWords: '2000', storyPace: 'preset' }), legacy);
-    assert.equal(proseTarget({ storyPace: 'unknown' }), '');
-    for (const [storyPace, label] of [['immersive', '沉浸'], ['slow', '慢'], ['medium', '中'], ['fast', '快']]) {
-        const target = proseTarget({ storyPace });
-        assert.ok(target.startsWith(`本轮剧情推进：${label}。`));
-        assert.match(target, /文风与文字节奏沿用主预设/);
-        assert.match(target, /不固定事件数/); assert.match(target, /重大决定仍由用户决定/);
-        assert.doesNotMatch(target, /最终正文|1500|2000/);
-        assert.equal(proseTarget({ minWords: 1500, maxWords: 2000, storyPace }), `${legacy}\n${target}`);
-        const ctx = context(); injectForTurn(ctx, { xml: '<content>大纲</content>', target });
-        assert.ok(ctx.extensionPrompts[INJECTION_KEY].value.includes(target));
-    }
-    assert.match(proseTarget({ storyPace: 'immersive' }), /不重复空转/);
-    assert.match(proseTarget({ storyPace: 'fast' }), /当前一条回复内.*不跳过用户的关键反馈/);
-});
-
-test('relationship pace is independent, persists and retains stage conditions without requiring word counts', () => {
-    assert.equal(DEFAULT_SETTINGS.relationshipPace, 'preset');
-    assert.equal(cleanSettings().relationshipPace, 'preset');
-    assert.equal(proseTarget({ relationshipPace: 'preset' }), '');
-    for (const relationshipPace of ['slow', 'medium', 'fast']) {
-        const saved = cleanSettings(JSON.parse(JSON.stringify(cleanSettings({ storyPace: 'fast', relationshipPace }))));
-        assert.equal(saved.relationshipPace, relationshipPace); assert.equal(saved.storyPace, 'fast');
-        const target = proseTarget({ relationshipPace });
-        assert.match(target, /本轮感情推进/); assert.doesNotMatch(target, /本轮剧情推进/);
-        assert.match(target, /细腻不等于缓慢/); assert.match(target, /可追溯的经历和实际反馈/);
-        assert.match(target, /维持或退缩/); assert.match(target, /不跳过关系阶段/);
-    }
-    for (const relationshipPace of ['immersive', 'FAST', '__proto__', null, {}]) assert.equal(cleanSettings({ relationshipPace }).relationshipPace, 'preset');
-    const combined = proseTarget({ storyPace: 'fast', relationshipPace: 'slow' });
-    assert.match(combined, /本轮剧情推进：快/); assert.match(combined, /本轮感情推进：慢/);
-    assert.equal(combined, `${proseTarget({ storyPace: 'fast' })}\n${proseTarget({ relationshipPace: 'slow' })}`);
-    assert.equal(proseTarget({ storyPace: 'fast', relationshipPace: 'preset' }), proseTarget({ storyPace: 'fast' }));
+    assert.equal(proseTarget({ storyPace: 'fast' }), '');
+    assert.equal(proseTarget({ storyPace: 'fast', relationshipPace: 'slow' }), '');
+    assert.equal(proseTarget({ minWords: '1500', maxWords: '2000', storyPace: 'fast', relationshipPace: 'slow' }), legacy);
+    const ctx = context(); injectForTurn(ctx, { xml: '<content>大纲</content>', target: legacy });
+    assert.ok(ctx.extensionPrompts[INJECTION_KEY].value.includes('1500—2000'));
+    assert.doesNotMatch(ctx.extensionPrompts[INJECTION_KEY].value, /本轮剧情推进|本轮感情推进/);
 });
 
 test('ST transport uses only independent endpoint/key and authenticated same-origin forwarding', async () => {
