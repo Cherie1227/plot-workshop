@@ -183,7 +183,7 @@
       "forbid_overrides": true,
       "identifier": "outline_writer_target_optional",
       "name": "可选｜正文目标与两项推进（填写后启用）",
-      "content": "填写需要的项目后启用；删除未填写的行。正文篇幅、剧情推进、感情推进分别处理：插件共享配置明确指定的维度采用配置，未指定的维度采用本条有效填写值。\n最终正文目标长度：〔自行填写或删除〕\n正文字数计数范围：〔自行填写或删除〕\n剧情推进：〔沉浸／慢／中／快，或自行描述；填写后删除其他选项〕\n感情推进：〔慢／中／快，或自行描述；填写后删除其他选项〕\n本轮期望推进到的位置：〔自行填写或删除〕\n两种推进速度独立：剧情速度决定本轮事件变化幅度，感情速度决定有经历支撑的关系变化幅度；各档均保留细腻因果，不跳过关系阶段，不替用户作重大决定。正文语言节奏与文风沿用主预设。",
+      "content": "填写需要的项目后启用；删除未填写的行。正文篇幅、剧情推进、感情推进分别处理：启用对应档位的开关条目或本条有效填写值优先，未指定的维度采用插件共享配置，再无指定则按「节奏判定」处理。\n最终正文目标长度：〔自行填写或删除〕\n正文字数计数范围：〔自行填写或删除〕\n剧情推进：〔沉浸／慢／中／快，或自行描述；填写后删除其他选项〕\n感情推进：〔极慢／慢／中／快，或自行描述；填写后删除其他选项〕\n本轮期望推进到的位置：〔自行填写或删除〕\n两种推进速度独立：剧情速度决定本轮事件变化幅度，感情速度决定有经历支撑的关系变化幅度；各档均保留细腻因果，不跳过关系阶段，不替用户作重大决定。正文语言节奏与文风沿用主预设。",
       "enabled": false,
       "system_prompt": false,
       "marker": false
@@ -198,6 +198,118 @@
       "identifier": "outline_length_optional",
       "name": "可选｜大纲表达长度（填写后启用）",
       "content": "本条配置大纲自身的表达详略，填写需要的项目后启用。\n大纲总长度：〔自行填写或删除〕\n结论与依据的详略偏好：〔自行填写或删除〕\n字数计数范围：〔自行填写或删除〕\n正文目标与推进节奏用于决定事件链容量，大纲表达长度用于压缩或补足交付说明。",
+      "enabled": false,
+      "system_prompt": false,
+      "marker": false
+    },
+    {
+      "role": "system",
+      "injection_position": 0,
+      "injection_depth": 4,
+      "injection_order": 100,
+      "injection_trigger": [],
+      "forbid_overrides": true,
+      "identifier": "outline_pace_plot_immersive",
+      "name": "档位｜剧情推进·沉浸",
+      "content": "剧情推进固定为沉浸档：充分展开当前互动中的具体判断与反馈，把一次有分量的交流写透，事件变化幅度最小。本条启用即覆盖共享配置的对应维度，与同组其他档位互斥（只启用一条）；本组全部未启用时按「节奏判定」的优先链决定。两种推进互相独立；各档保留细腻因果，不跳过关系阶段，不替用户作重大决定。",
+      "enabled": false,
+      "system_prompt": false,
+      "marker": false
+    },
+    {
+      "role": "system",
+      "injection_position": 0,
+      "injection_depth": 4,
+      "injection_order": 100,
+      "injection_trigger": [],
+      "forbid_overrides": true,
+      "identifier": "outline_pace_plot_slow",
+      "name": "档位｜剧情推进·慢",
+      "content": "剧情推进固定为慢档：充分承接已有反馈，再推进局部矛盾或认知，不跳过过渡。本条启用即覆盖共享配置的对应维度，与同组其他档位互斥（只启用一条）；本组全部未启用时按「节奏判定」的优先链决定。两种推进互相独立；各档保留细腻因果，不跳过关系阶段，不替用户作重大决定。",
+      "enabled": false,
+      "system_prompt": false,
+      "marker": false
+    },
+    {
+      "role": "system",
+      "injection_position": 0,
+      "injection_depth": 4,
+      "injection_order": 100,
+      "injection_trigger": [],
+      "forbid_overrides": true,
+      "identifier": "outline_pace_plot_medium",
+      "name": "档位｜剧情推进·中",
+      "content": "剧情推进固定为中档：展开与推进均衡，关键互动充分展开，过渡与低价值过程可概述。本条启用即覆盖共享配置的对应维度，与同组其他档位互斥（只启用一条）；本组全部未启用时按「节奏判定」的优先链决定。两种推进互相独立；各档保留细腻因果，不跳过关系阶段，不替用户作重大决定。",
+      "enabled": false,
+      "system_prompt": false,
+      "marker": false
+    },
+    {
+      "role": "system",
+      "injection_position": 0,
+      "injection_depth": 4,
+      "injection_order": 100,
+      "injection_trigger": [],
+      "forbid_overrides": true,
+      "identifier": "outline_pace_plot_fast",
+      "name": "档位｜剧情推进·快",
+      "content": "剧情推进固定为快档：集中关键选择及其结果，场景转换与低价值过程以概述或时间跃迁跨过，事件变化幅度大；感情不同步加速。本条启用即覆盖共享配置的对应维度，与同组其他档位互斥（只启用一条）；本组全部未启用时按「节奏判定」的优先链决定。两种推进互相独立；各档保留细腻因果，不跳过关系阶段，不替用户作重大决定。",
+      "enabled": false,
+      "system_prompt": false,
+      "marker": false
+    },
+    {
+      "role": "system",
+      "injection_position": 0,
+      "injection_depth": 4,
+      "injection_order": 100,
+      "injection_trigger": [],
+      "forbid_overrides": true,
+      "identifier": "outline_pace_rel_freeze",
+      "name": "档位｜感情推进·极慢",
+      "content": "感情推进固定为极慢档：本轮几乎不落实关系变化，情感以铺陈、信号与线索形式累积，已有的张力与未说破的内容保持悬挂。本条启用即覆盖共享配置的对应维度，与同组其他档位互斥（只启用一条）；本组全部未启用时按「节奏判定」的优先链决定。两种推进互相独立；各档保留细腻因果，不跳过关系阶段，不替用户作重大决定。",
+      "enabled": false,
+      "system_prompt": false,
+      "marker": false
+    },
+    {
+      "role": "system",
+      "injection_position": 0,
+      "injection_depth": 4,
+      "injection_order": 100,
+      "injection_trigger": [],
+      "forbid_overrides": true,
+      "identifier": "outline_pace_rel_slow",
+      "name": "档位｜感情推进·慢",
+      "content": "感情推进固定为慢档：只落实有充分经历支撑的细微变化，兴趣与信任的移动以可辨认的小幅度为准。本条启用即覆盖共享配置的对应维度，与同组其他档位互斥（只启用一条）；本组全部未启用时按「节奏判定」的优先链决定。两种推进互相独立；各档保留细腻因果，不跳过关系阶段，不替用户作重大决定。",
+      "enabled": false,
+      "system_prompt": false,
+      "marker": false
+    },
+    {
+      "role": "system",
+      "injection_position": 0,
+      "injection_depth": 4,
+      "injection_order": 100,
+      "injection_trigger": [],
+      "forbid_overrides": true,
+      "identifier": "outline_pace_rel_medium",
+      "name": "档位｜感情推进·中",
+      "content": "感情推进固定为中档：有因果支撑的关系变化正常落实，幅度与经历分量相称。本条启用即覆盖共享配置的对应维度，与同组其他档位互斥（只启用一条）；本组全部未启用时按「节奏判定」的优先链决定。两种推进互相独立；各档保留细腻因果，不跳过关系阶段，不替用户作重大决定。",
+      "enabled": false,
+      "system_prompt": false,
+      "marker": false
+    },
+    {
+      "role": "system",
+      "injection_position": 0,
+      "injection_depth": 4,
+      "injection_order": 100,
+      "injection_trigger": [],
+      "forbid_overrides": true,
+      "identifier": "outline_pace_rel_fast",
+      "name": "档位｜感情推进·快",
+      "content": "感情推进固定为快档：让有积累的意愿更直接地落实为可见进展，但不跳过关系阶段。本条启用即覆盖共享配置的对应维度，与同组其他档位互斥（只启用一条）；本组全部未启用时按「节奏判定」的优先链决定。两种推进互相独立；各档保留细腻因果，不跳过关系阶段，不替用户作重大决定。",
       "enabled": false,
       "system_prompt": false,
       "marker": false
@@ -449,7 +561,7 @@
       "forbid_overrides": true,
       "identifier": "outline_think_drive",
       "name": "思考｜欲求落地与落点",
-      "content": "【驱力到人】\n对每个本轮重点人物：此刻最强的内在驱力 → 想争取的具体结果 → 愿意付出的代价 → 本轮实际行动。驱力来自此人设定与经历。人物依自身利益、信念与处境行动，并非善恶分明：忠于设定的道德灰度、缺陷、自私、嫉妒、愤怒都如实进入选择，不洗白、不柔化、不以“其实本性善良”兜底，也不凭空附加恶意。本轮若触及此人的阴暗面、底线或冲突点，如实外化其偏执、强硬或负面反应，容许酸涩、争执与误解自然发生，不为维持表面和气而软化、回避。\n【反馈闭环】\n对方依据自身信息与欲求如何接收与回应，这份反馈怎样改变行动者的下一步；由此确定本轮核心问题。\n【本轮增量】\n对照校准后的持续状态，明确本轮实际改变了什么：情感方向与程度（升温、降温、固化、动摇或反转）、关系位置、局面条件各有何种移动；判定基本不变时说明依据，且不变本身必须产生新的张力、新的已知或新的代价——没有任何增量的轮次等于没有发生。\n【节奏判定】\n节奏来源按优先级：用户在输入中指定的档位 > 共享配置（正文目标）指定的档位 > 按场景性质判定 > 默认沉浸—慢速。场景判定：动作、冲突、多线交汇的场面宜推进；情感铺陈、袒露与深度对话的场面宜沉浸，把一次有分量的交流写透；关系转折后的消化期宜放缓。深度对话的承接不限于反问，可按人物选择分享自身、表达理解、联想或沉默陪伴。轮内速率不必均匀：高价值节点充分展开，过渡与低价值过程以概述或时间跃迁跨过，不为凑节点平均用力。沉浸—慢速基准：充分承接已有反馈再推进局部矛盾或认知，情感变化逐级落实、以经历为依据，不跳过关系阶段，不因事件数量牺牲一次有分量的互动；慢速约束单轮步幅，不冻结状态——每轮的增量再小也必须成立。\n【选定落点】\n本轮完成的阶段变化与最后一拍：由谁的具体言行或局面变化收束，留下真实可继续的条件。落点不得以 {{user}} 的言行收尾；不用“他在等你”式等待、期待回应的话术；不抛 A/B 选择、不反问索要回答；不回顾总结或升华意义；不把吃饭睡觉等日常安排当作落点。",
+      "content": "【驱力到人】\n对每个本轮重点人物：此刻最强的内在驱力 → 想争取的具体结果 → 愿意付出的代价 → 本轮实际行动。驱力来自此人设定与经历。人物依自身利益、信念与处境行动，并非善恶分明：忠于设定的道德灰度、缺陷、自私、嫉妒、愤怒都如实进入选择，不洗白、不柔化、不以“其实本性善良”兜底，也不凭空附加恶意。本轮若触及此人的阴暗面、底线或冲突点，如实外化其偏执、强硬或负面反应，容许酸涩、争执与误解自然发生，不为维持表面和气而软化、回避。\n【反馈闭环】\n对方依据自身信息与欲求如何接收与回应，这份反馈怎样改变行动者的下一步；由此确定本轮核心问题。\n【本轮增量】\n对照校准后的持续状态，明确本轮实际改变了什么：情感方向与程度（升温、降温、固化、动摇或反转）、关系位置、局面条件各有何种移动；判定基本不变时说明依据，且不变本身必须产生新的张力、新的已知或新的代价——没有任何增量的轮次等于没有发生。\n【节奏判定】\n节奏来源按优先级：用户在输入中指定的档位 > 启用的档位开关条目（「档位」分组） > 共享配置（正文目标）指定的档位 > 按场景性质判定 > 默认沉浸—慢速。场景判定：动作、冲突、多线交汇的场面宜推进；情感铺陈、袒露与深度对话的场面宜沉浸，把一次有分量的交流写透；关系转折后的消化期宜放缓。深度对话的承接不限于反问，可按人物选择分享自身、表达理解、联想或沉默陪伴。轮内速率不必均匀：高价值节点充分展开，过渡与低价值过程以概述或时间跃迁跨过，不为凑节点平均用力。沉浸—慢速基准：充分承接已有反馈再推进局部矛盾或认知，情感变化逐级落实、以经历为依据，不跳过关系阶段，不因事件数量牺牲一次有分量的互动；慢速约束单轮步幅，不冻结状态——每轮的增量再小也必须成立。\n【选定落点】\n本轮完成的阶段变化与最后一拍：由谁的具体言行或局面变化收束，留下真实可继续的条件。落点不得以 {{user}} 的言行收尾；不用“他在等你”式等待、期待回应的话术；不抛 A/B 选择、不反问索要回答；不回顾总结或升华意义；不把吃饭睡觉等日常安排当作落点。",
       "enabled": true,
       "system_prompt": false,
       "marker": false
@@ -481,6 +593,38 @@
         },
         {
           "identifier": "outline_length_optional",
+          "enabled": false
+        },
+        {
+          "identifier": "outline_pace_plot_immersive",
+          "enabled": false
+        },
+        {
+          "identifier": "outline_pace_plot_slow",
+          "enabled": false
+        },
+        {
+          "identifier": "outline_pace_plot_medium",
+          "enabled": false
+        },
+        {
+          "identifier": "outline_pace_plot_fast",
+          "enabled": false
+        },
+        {
+          "identifier": "outline_pace_rel_freeze",
+          "enabled": false
+        },
+        {
+          "identifier": "outline_pace_rel_slow",
+          "enabled": false
+        },
+        {
+          "identifier": "outline_pace_rel_medium",
+          "enabled": false
+        },
+        {
+          "identifier": "outline_pace_rel_fast",
           "enabled": false
         },
         {
@@ -593,7 +737,7 @@
   "extensions": {
     "dual_model_outline_preset": {
       "schema_version": 1,
-      "preset_version": "0.3.2",
+      "preset_version": "0.3.3",
       "purpose": "本轮任务与资料、人物逻辑、情感与关系、事件链、正文交接、思考确认、输出格式；第三人称、复述输入、轻度抢话",
       "status": "builtin_plugin_preset",
       "required_runtime_context": [
