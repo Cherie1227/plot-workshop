@@ -69,18 +69,30 @@ test('token estimate handles Unicode and runtime messages; inconsistent or absen
     assert.throws(() => buildPromptInspection({ preset, compiled: { ...compiled, messages: [] } }), /不一致/);
 });
 
-test('only built-in ordering is context-first with final output last and no variable-order dependencies', () => {
+test('built-in ordering is rules-first with context, input, thinking and output contract last and no variable-order dependencies', () => {
     const source = JSON.parse(fs.readFileSync(new URL('../presets/default.json', import.meta.url), 'utf8'));
     const preset = normalizePreset(source);
     assert.equal(source.name, '第三人称 · 轻度抢话');
     assert.ok(preset.prompts.every(item => !/\{\{\s*(?:set|get)(?:global)?var/i.test(item.content)));
-    const groups = ['outline_context','outline_task','outline_character','outline_emotion','outline_story','outline_voice','outline_delivery'];
+    const groups = ['outline_context','outline_task','outline_character','outline_emotion','outline_story','outline_voice','outline_thinking','outline_delivery'];
     assert.deepEqual(preset.groups.map(group => group.id), groups);
     const ranks = preset.order.map(entry => groups.indexOf(preset.promptGroups[entry.identifier]));
-    assert.deepEqual(ranks, [...ranks].sort((a,b) => a - b));
-    assert.equal(preset.order[0].identifier, 'worldInfoBefore');
+    // Each group's entries form one contiguous block, in reading order rather than group order.
+    const seen = new Set();
+    for (let i = 0; i < ranks.length; i++) {
+        assert.ok(!seen.has(ranks[i]), 'entries of one group must not be split by another group');
+        if (i === ranks.length - 1 || ranks[i + 1] !== ranks[i]) seen.add(ranks[i]);
+    }
+    assert.equal(preset.order[0].identifier, 'main');
     const compiled = compilePreset(preset, { context: { ...context, worldInfoBefore: '', personaDescription: '用户设定', charDescription: '人物设定', charPersonality: '', scenario: '', worldInfoAfter: '', dialogueExamples: '', chatHistory: [] } });
-    assert.ok(compiled.entries.findIndex(entry => entry.id === 'current_input') < compiled.entries.findIndex(entry => entry.id === 'main'));
+    const at = id => compiled.entries.findIndex(entry => entry.id === id);
+    // Rules act as the reading lens first; materials, runtime input, the thinking
+    // checks and the output contract sit at the end, closest to generation.
+    assert.ok(at('main') < at('worldInfoBefore'));
+    assert.ok(at('outline_ending') < at('chatHistory'));
+    assert.ok(at('chatHistory') < at('current_input'));
+    assert.ok(at('current_input') < at('outline_think_state'));
+    assert.ok(at('outline_think_drive') < at('outline_output'));
     assert.equal(compiled.entries.at(-1).id, 'outline_output');
     assert.ok(!compiled.messages.at(-1).content.includes('<knowledge>'));
     assert.ok(!compiled.messages.at(-1).content.includes('<cause>'));
