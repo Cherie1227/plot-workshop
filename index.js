@@ -711,7 +711,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         } catch (error) {
             check(); // Do not expose a late response in another chat or cancelled round.
             if (error.responsePreview) {
-                state.planningFailure = { ...error.responsePreview, code: errorCode(error),
+                state.planningFailure = { ...error.responsePreview, code: errorCode(error), message: error.message,
                     content: redactSecrets(error.responsePreview.content, [...historicalSecrets, state.apiKey]),
                     reasoning: redactSecrets(error.responsePreview.reasoning, [...historicalSecrets, state.apiKey]) };
                 error.message += ' 可在“大纲 → 最近失败响应”查看返回文本。';
@@ -954,7 +954,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             if (type === 'copyFailedResponse') {
                 const failure = state.planningFailure;
                 if (!failure) throw new Error('本页没有保留失败响应。');
-                await copyText(`错误：${failure.code}\n结束原因：${failure.finishReason}\n${failure.truncated ? '长文本仅保留前后片段。\n' : ''}\n【返回文本】\n${failure.content}\n\n【接口分析】\n${failure.reasoning}`);
+                await copyText(`错误：${failure.code}${failure.message ? `：${failure.message}` : ''}\n结束原因：${failure.finishReason}\n${failure.truncated ? '长文本仅保留前后片段。\n' : ''}\n【返回文本】\n${failure.content}\n\n【接口分析】\n${failure.reasoning}`);
                 status('失败响应已复制，仅供排查。'); return;
             }
             if (type === 'checkUpdate') return await updater.check();

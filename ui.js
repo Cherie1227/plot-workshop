@@ -1284,7 +1284,21 @@ export function createWorkbench({ getState, onAction }) {
             const enabledMap = new Map((preset.order || []).map(entry => [entry.identifier, entry.enabled]));
             const mapping = preset.promptGroups || {};
             function groupFor(id) { return typeof mapping[id] === 'string' ? mapping[id] : mapping[id]?.groupId; }
+            // Imported presets often carry thematic group metadata whose order has
+            // nothing to do with the actual send order. Display each group where
+            // its first entry appears in the prompt order; empty groups stay last.
+            const firstIndex = new Map();
+            promptList.forEach((prompt, index) => {
+                const gid = groups.some(g => g.id === groupFor(prompt.identifier)) ? groupFor(prompt.identifier) : '__ungrouped';
+                if (!firstIndex.has(gid)) firstIndex.set(gid, index);
+            });
             if (promptList.some(p => !groups.some(g => g.id === groupFor(p.identifier)))) groups.push({ id: '__ungrouped', name: '未分组条目', enabled: true });
+            groups.sort((a, b) => {
+                const ia = firstIndex.has(a.id) ? firstIndex.get(a.id) : Infinity;
+                const ib = firstIndex.has(b.id) ? firstIndex.get(b.id) : Infinity;
+                if (ia !== ib) return ia - ib;
+                return (a.order || 0) - (b.order || 0);
+            });
             presetGroups.replaceChildren();
             const preferredGroup = groups[0]?.id;
             for (const group of groups) {
@@ -1628,7 +1642,7 @@ export function createWorkbench({ getState, onAction }) {
     function renderPlan(state) {
         const failure = state.planningFailure;
         failedResponse.hidden = !failure;
-        failedResponseMeta.textContent = failure ? `错误：${failure.code} · 结束原因：${failure.finishReason}${failure.truncated ? ' · 长文本仅保留前后片段' : ''}` : '';
+        failedResponseMeta.textContent = failure ? `错误：${failure.code}${failure.message ? ` · ${failure.message}` : ''} · 结束原因：${failure.finishReason}${failure.truncated ? ' · 长文本仅保留前后片段' : ''}` : '';
         failedResponseText.textContent = failure?.content || '未返回文本。';
         failedReasoningText.textContent = failure?.reasoning || '';
         failedReasoningTitle.hidden = failedReasoningText.hidden = !failure?.reasoning;
