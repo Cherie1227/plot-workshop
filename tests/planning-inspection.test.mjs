@@ -74,7 +74,7 @@ test('built-in ordering is rules-first with context, input, thinking and output 
     const preset = normalizePreset(source);
     assert.equal(source.name, '第三人称 · 轻度抢话');
     assert.ok(preset.prompts.every(item => !/\{\{\s*(?:set|get)(?:global)?var/i.test(item.content)));
-    const groups = ['outline_context','outline_task','outline_character','outline_special','outline_emotion','outline_story','outline_voice','outline_thinking','outline_delivery'];
+    const groups = ['outline_context','outline_task','outline_tiers','outline_character','outline_special','outline_emotion','outline_story','outline_voice','outline_thinking','outline_delivery'];
     assert.deepEqual(preset.groups.map(group => group.id), groups);
     const ranks = preset.order.map(entry => groups.indexOf(preset.promptGroups[entry.identifier]));
     // Each group's entries form one contiguous block, in reading order rather than group order.

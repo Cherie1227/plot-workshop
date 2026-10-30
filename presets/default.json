@@ -771,7 +771,7 @@
       "forbid_overrides": true,
       "identifier": "outline_think_drive",
       "name": "思考｜欲求落地与落点",
-      "content": "【驱力到人】\n对每个本轮重点人物：此刻最强的内在驱力 → 想争取的具体结果 → 愿意付出的代价 → 本轮实际行动。驱力来自此人设定与经历。人物依自身利益、信念与处境行动，并非善恶分明：忠于设定的道德灰度、缺陷、自私、嫉妒、愤怒都如实进入选择，不洗白、不柔化、不以“其实本性善良”兜底，也不凭空附加恶意。本轮若触及此人的阴暗面、底线或冲突点，如实外化其偏执、强硬或负面反应，容许酸涩、争执与误解自然发生，不为维持表面和气而软化、回避。\n【反馈闭环】\n对方依据自身信息与欲求如何接收与回应，这份反馈怎样改变行动者的下一步；由此确定本轮核心问题。\n【本轮增量】\n对照校准后的持续状态，明确本轮实际改变了什么：情感方向与程度（升温、降温、固化、动摇或反转）、关系位置、局面条件各有何种移动；判定基本不变时说明依据，且不变本身必须产生新的张力、新的已知或新的代价——没有任何增量的轮次等于没有发生。\n【节奏判定】\n节奏来源按优先级：用户在输入中指定的档位 > 启用的档位开关条目（「档位」分组） > 共享配置（正文目标）指定的档位 > 按场景性质判定 > 默认沉浸—慢速。场景判定：动作、冲突、多线交汇的场面宜推进；情感铺陈、袒露与深度对话的场面宜沉浸，把一次有分量的交流写透；关系转折后的消化期宜放缓。深度对话的承接不限于反问，可按人物选择分享自身、表达理解、联想或沉默陪伴。轮内速率不必均匀：高价值节点充分展开，过渡与低价值过程以概述或时间跃迁跨过，不为凑节点平均用力。沉浸—慢速基准：充分承接已有反馈再推进局部矛盾或认知，情感变化逐级落实、以经历为依据，不跳过关系阶段，不因事件数量牺牲一次有分量的互动；慢速约束单轮步幅，不冻结状态——每轮的增量再小也必须成立。\n【选定落点】\n本轮完成的阶段变化与最后一拍：由谁的具体言行或局面变化收束，留下真实可继续的条件。落点不得以 {{user}} 的言行收尾；不用“他在等你”式等待、期待回应的话术；不抛 A/B 选择、不反问索要回答；不回顾总结或升华意义；不把吃饭睡觉等日常安排当作落点。",
+      "content": "【驱力到人】\n对每个本轮重点人物：此刻最强的内在驱力 → 想争取的具体结果 → 愿意付出的代价 → 本轮实际行动。驱力来自此人设定与经历。人物依自身利益、信念与处境行动，并非善恶分明：忠于设定的道德灰度、缺陷、自私、嫉妒、愤怒都如实进入选择，不洗白、不柔化、不以“其实本性善良”兜底，也不凭空附加恶意。本轮若触及此人的阴暗面、底线或冲突点，如实外化其偏执、强硬或负面反应，容许酸涩、争执与误解自然发生，不为维持表面和气而软化、回避。\n【反馈闭环】\n对方依据自身信息与欲求如何接收与回应，这份反馈怎样改变行动者的下一步；由此确定本轮核心问题。\n【本轮增量】\n对照校准后的持续状态，明确本轮实际改变了什么：情感方向与程度（升温、降温、固化、动摇或反转）、关系位置、局面条件各有何种移动；判定基本不变时说明依据，且不变本身必须产生新的张力、新的已知或新的代价——没有任何增量的轮次等于没有发生。\n【节奏判定】\n节奏来源按优先级：用户在输入中指定的档位 > 启用的档位开关条目（「档位」分组） > 共享配置（正文目标）指定的档位 > 按场景性质判定 > 默认沉浸—慢速。场景判定：动作、冲突、多线交汇的场面宜推进；情感铺陈、袒露与深度对话的场面宜沉浸，把一次有分量的交流写透；关系转折后的消化期宜放缓。深度对话的承接不限于反问，可按人物选择分享自身、表达理解、联想或沉默陪伴。轮内速率不必均匀：高价值节点充分展开，过渡与低价值过程以概述或时间跃迁跨过，不为凑节点平均用力。沉浸—慢速基准：充分承接已有反馈再推进局部矛盾或认知，情感变化逐级落实、以经历为依据，不跳过关系阶段，不因事件数量牺牲一次有分量的互动；慢速约束单轮步幅，不冻结状态——每轮的增量再小也必须成立。\n【按需条目落实】列出本轮已启用的按需条目（档位、爱意、暗影、特质等），确认本轮安排在何处体现每一条的要求；与角色卡或上文冲突时，按条目自带的优先级说明处理。全部未启用时跳过本步。\n【选定落点】\n本轮完成的阶段变化与最后一拍：由谁的具体言行或局面变化收束，留下真实可继续的条件。落点不得以 {{user}} 的言行收尾；不用“他在等你”式等待、期待回应的话术；不抛 A/B 选择、不反问索要回答；不回顾总结或升华意义；不把吃饭睡觉等日常安排当作落点。",
       "enabled": true,
       "system_prompt": false,
       "marker": false
@@ -1007,7 +1007,7 @@
   "extensions": {
     "dual_model_outline_preset": {
       "schema_version": 1,
-      "preset_version": "0.3.9",
+      "preset_version": "0.4.0",
       "purpose": "本轮任务与资料、人物逻辑、情感与关系、事件链、正文交接、思考确认、输出格式；第三人称、复述输入、轻度抢话",
       "status": "builtin_plugin_preset",
       "required_runtime_context": [
@@ -1072,51 +1072,58 @@
             "enabled": true
           },
           {
+            "id": "outline_tiers",
+            "name": "档位｜推进与情绪强度",
+            "order": 2,
+            "collapsed": true,
+            "enabled": true
+          },
+          {
             "id": "outline_character",
             "name": "02 人物逻辑",
-            "order": 2,
+            "order": 3,
             "collapsed": true,
             "enabled": true
           },
           {
             "id": "outline_special",
             "name": "人物特化（按需开启）",
-            "order": 3,
+            "order": 4,
             "collapsed": true,
             "enabled": true
           },
           {
             "id": "outline_emotion",
             "name": "03 情感与关系",
-            "order": 4,
+            "order": 5,
             "collapsed": true,
             "enabled": true
           },
           {
             "id": "outline_story",
             "name": "04 事件链",
-            "order": 5,
+            "order": 6,
             "collapsed": true,
             "enabled": true
           },
           {
             "id": "outline_voice",
             "name": "05 正文交接",
-            "order": 6,
+            "order": 7,
             "collapsed": true,
             "enabled": true
           },
           {
             "id": "outline_thinking",
             "name": "06 思考确认",
-            "order": 7,
+            "order": 8,
             "collapsed": true,
             "enabled": true
           },
           {
             "id": "outline_delivery",
             "name": "07 输出格式",
-            "order": 8,
+            "order": 9,
             "collapsed": true,
             "enabled": true
           }
@@ -1250,6 +1257,42 @@
           },
           "outline_trait_fox": {
             "groupId": "outline_special"
+          },
+          "outline_pace_plot_immersive": {
+            "groupId": "outline_tiers"
+          },
+          "outline_pace_plot_slow": {
+            "groupId": "outline_tiers"
+          },
+          "outline_pace_plot_medium": {
+            "groupId": "outline_tiers"
+          },
+          "outline_pace_plot_fast": {
+            "groupId": "outline_tiers"
+          },
+          "outline_pace_rel_freeze": {
+            "groupId": "outline_tiers"
+          },
+          "outline_pace_rel_slow": {
+            "groupId": "outline_tiers"
+          },
+          "outline_pace_rel_medium": {
+            "groupId": "outline_tiers"
+          },
+          "outline_pace_rel_fast": {
+            "groupId": "outline_tiers"
+          },
+          "outline_intensity_50": {
+            "groupId": "outline_tiers"
+          },
+          "outline_intensity_100": {
+            "groupId": "outline_tiers"
+          },
+          "outline_intensity_150": {
+            "groupId": "outline_tiers"
+          },
+          "outline_intensity_200": {
+            "groupId": "outline_tiers"
           }
         }
       }
