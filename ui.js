@@ -375,7 +375,7 @@ export function createWorkbench({ getState, onAction }) {
         ['保留', '读卡、人物、情感、剧情、视角与用户参与规则。分析输出也可保留，放在 content 外即可，标签名称不限；生成后在“规划分析”查看，不注入正文请求。'],
         ['自动关闭', '名称与内容明确指向额外输出正文、状态栏或逐轮总结的独立条目。导入后列出原因，可一键恢复。'],
         ['人工检查', '混合多种用途、含变量依赖或无法明确识别的条目保留。文风和八股模块按内容决定：用于正文措辞的部分可关闭，在主预设中保留。'],
-        ['篇幅', '正文目标供规划与扩写共享；大纲段数和字数单独设置。'],
+        ['篇幅', '正文目标供规划与扩写共享；内置预设按篇幅与推进节奏组织事件，大纲表达长度可单独配置。'],
         ['变量与格式', '变量定义需先于引用，勿整组关闭定义项。固定 content 四字段协议保持启用；脚本和正则不会执行。'],
     ]) { const item = el('div', 'pw-import-help-item'); item.append(el('strong', '', title), el('p', '', text)); importHelp.append(item); }
     importHelp.append(el('p', 'pw-hint', '识别使用本地规则，不调用模型。Vespera 自己导出的预设保留原开关，不重复整理。'));
@@ -1559,7 +1559,7 @@ export function createWorkbench({ getState, onAction }) {
                 }
                 if (!(plan.characters || []).length) characters.append(el('p', '', '不涉及'));
                 planReading.append(characters);
-                for (const [index, segment] of (plan.segments || []).entries()) block(`片段 ${segment.index || index + 1}`, typeof segment === 'string' ? segment : segment.text || segment.content, 'pw-segment');
+                for (const [index, segment] of (plan.segments || []).entries()) block(`事件 ${segment.index || index + 1}`, typeof segment === 'string' ? segment : segment.text || segment.content, 'pw-segment');
                 block('本轮结束状态', plan.endState || plan.end_state, 'pw-end-state');
             }
         }
