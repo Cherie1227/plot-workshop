@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { INJECTION_KEY, DEFAULT_SETTINGS, cleanSettings, proseTarget, assertChat, storySnapshot, collectPlanningContext, createSTTransport, inertHostText, injectForTurn, clearInjection } from '../lib/host.js';
+import { INJECTION_KEY, DEFAULT_SETTINGS, cleanSettings, describeInjection, proseTarget, assertChat, storySnapshot, collectPlanningContext, createSTTransport, inertHostText, injectForTurn, clearInjection } from '../lib/host.js';
 
 function context() {
     const ctx = {
@@ -94,6 +94,37 @@ test('temporary injection excludes WI scanning, passes a validity filter and nev
     assert.equal(ctx.extensionPrompts.other.value, 'keep');
     clearInjection(ctx);
     assert.equal(JSON.stringify(ctx.chat), before);
+});
+
+test('injection options map to the official ST enums while preserving scan isolation and filter', () => {
+    const ctx = context(), valid = () => false;
+    for (const [position, expectedPosition] of [['before_prompt', 2], ['in_prompt', 0], ['in_chat', 1]]) {
+        for (const [role, expectedRole] of [['system', 0], ['user', 1], ['assistant', 2]]) {
+            injectForTurn(ctx, { xml: '<content>大纲</content>', valid, injection: { position, depth: '3', role } });
+            const result = ctx.extensionPrompts[INJECTION_KEY];
+            assert.equal(result.position, expectedPosition); assert.equal(result.depth, 3); assert.equal(result.role, expectedRole);
+            assert.equal(result.scan, false); assert.equal(result.filter, valid);
+        }
+    }
+});
+
+test('invalid direct injection options fail before modifying the host prompt', () => {
+    const ctx = context();
+    for (const injection of [{ position: 'before_chat' }, { position: '__proto__' }, { role: 'developer' }, { depth: -1 }, { depth: 1.5 }, { depth: '1e2' }, { depth: 'NaN' }, { depth: '' }, { depth: 10001 }, { depth: Number.MAX_SAFE_INTEGER + 1 }]) {
+        assert.throws(() => injectForTurn(ctx, { xml: '<content>x</content>', injection }));
+        assert.equal(ctx.extensionPrompts[INJECTION_KEY], undefined);
+    }
+});
+
+test('stored injection settings are normalized to supported defaults and described accurately', () => {
+    const defaults = cleanSettings({ injectionPosition: 'bad', injectionDepth: '-1', injectionRole: 'bad' });
+    assert.equal(defaults.injectionPosition, 'in_chat'); assert.equal(defaults.injectionDepth, '0'); assert.equal(defaults.injectionRole, 'system');
+    const custom = cleanSettings({ injectionPosition: 'before_prompt', injectionDepth: '003', injectionRole: 'user' });
+    assert.equal(custom.injectionDepth, '3'); assert.equal(custom.injectionPosition, 'before_prompt'); assert.equal(custom.injectionRole, 'user');
+    assert.match(describeInjection(), /IN_CHAT.*深度 0.*最新消息之后.*系统/);
+    assert.match(describeInjection(custom), /BEFORE_PROMPT.*不按聊天深度.*user/);
+    assert.match(describeInjection({ injectionPosition: 'in_prompt' }), /角色\/场景提示之后.*IN_PROMPT/);
+    assert.match(describeInjection({ injectionDepth: '2', injectionRole: 'assistant' }), /深度 2.*向前计数.*助手/);
 });
 
 test('story fingerprint is preserved only when dropping the exact newly submitted user input', () => {

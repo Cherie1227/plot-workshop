@@ -3,59 +3,454 @@ import { normalizePreset, exportPreset, compilePreset } from './lib/preset.js';
 import { parseContent } from './lib/content.js';
 import { requestPlan, normalizeEndpoint, redactSecrets } from './lib/planner.js';
 import * as nativeAnima from './lib/anima.js';
-import { DEFAULT_SETTINGS, cleanSettings, proseTarget, assertChat, storySnapshot, collectPlanningContext, createSTTransport, injectForTurn, clearInjection } from './lib/host.js';
+import { fetchModelList, testApiConnection, requestDiagnosis } from './lib/api.js';
+import { makeVersion, sanitizeBackup } from './lib/workshop-tools.js';
+import { buildPromptInspection } from './lib/prompt-inspector.js';
+import { getHostCatalog, readHostPreset, readExtraWorldbooks } from './lib/host-library.js';
+import { createRuntimeLog } from './lib/runtime-log.js';
+import { createUpdater } from './lib/updater.js';
+import { saveSettingsBeforeReload } from './lib/settings-save.js';
+import { cleanSettings, proseTarget, assertChat, storySnapshot, collectPlanningContext, createSTTransport, injectForTurn, clearInjection, describeInjection, buildInjectionText } from './lib/host.js';
 
 const STORE = 'plot_workshop';
 const base = new URL('./', import.meta.url);
 const normalType = type => !type || type === 'normal';
+const API_FIELDS = ['baseUrl', 'model', 'temperature', 'maxTokens'];
+const connectionSettings = input => Object.fromEntries(API_FIELDS.map(key => [key, String(input?.[key] ?? '')]));
+const newId = prefix => `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+const keyStorageName = id => `${STORE}:api-key:${id}`;
+const bookNames = input => Array.isArray(input) ? [...new Set(input.filter(name => typeof name === 'string' && name.trim() && name.length <= 500))] : [];
+const planningSettings = settings => Object.fromEntries(Object.entries(settings).filter(([key]) => !['theme', 'fontSize', 'lineHeight'].includes(key)));
+const errorCode = error => typeof error?.code === 'string' && /^[A-Z0-9_]{1,64}$/.test(error.code) ? error.code : 'UNKNOWN';
+
+function readPlanningPreset(input, options) {
+    const data = structuredClone(input);
+    const source = data?.version && data?.data ? data.data : data;
+    const marker = source?.extensions?.plot_workshop;
+    const preserveSelection = marker?.schema_version === 1 && marker?.preserve_prompt_selection === true;
+    if (preserveSelection) delete source.extensions.plot_workshop;
+    return { preset: normalizePreset(data, options), preserveSelection };
+}
+
+function writePlanningPreset(preset) {
+    const data = exportPreset(preset);
+    // A later import must preserve intentional deletions, including the output protocol.
+    data.extensions.plot_workshop = { schema_version: 1, preserve_prompt_selection: true };
+    return data;
+}
 
 /** Exported for host-contract integration tests; normal installation uses boot(). */
-export async function createPlugin({ getContext, builtin, writerRules, anima = nativeAnima, viewFactory = createWorkbench, fetchImpl = fetch } = {}) {
+export async function createPlugin({ getContext, builtin, writerRules, anima = nativeAnima, viewFactory = createWorkbench, fetchImpl = fetch,
+    api = { fetchModelList, testApiConnection, requestDiagnosis }, updaterFactory = createUpdater,
+    extensionUrl = base.href, currentVersion = '开发版', reloadPage = () => globalThis.location?.reload() } = {}) {
     const ctx = getContext();
     const saved = ctx.extensionSettings[STORE] || {};
-    let defaultPreset = normalizePreset(builtin, { name: '第三人称 · 轻度抢话' });
-    let selected;
-    try { selected = saved.preset ? normalizePreset(saved.preset) : structuredClone(defaultPreset); }
-    catch { selected = structuredClone(defaultPreset); }
-    const state = { settings: cleanSettings(saved.settings), preset: selected, apiKey: '', input: '', plan: null, rawPlan: '',
-        status: '准备就绪', stage: 'idle', busy: false, awaitingReview: false, animaStatus: '尚未连接', warnings: [], isPreview: false };
+    const defaultPreset = normalizePreset(builtin, { name: '第三人称 · 轻度抢话' });
+    const initialSettings = cleanSettings(saved.settings), initialWarnings = [];
+    const apiProfiles = [];
+    for (const profile of Array.isArray(saved.apiProfiles) ? saved.apiProfiles : []) {
+        if (!profile || typeof profile.id !== 'string' || apiProfiles.some(item => item.id === profile.id)) continue;
+        apiProfiles.push({ id: profile.id, name: String(profile.name || 'API 方案'), ...connectionSettings(profile) });
+    }
+    if (!apiProfiles.length) apiProfiles.push({ id: newId('api'), name: '默认 API', ...connectionSettings(initialSettings) });
+    const activeApi = apiProfiles.find(profile => profile.id === saved.activeApiProfileId) || apiProfiles[0];
+    const presetLibrary = [];
+    for (const entry of Array.isArray(saved.presetLibrary) ? saved.presetLibrary : []) {
+        if (!entry || typeof entry.id !== 'string' || presetLibrary.some(item => item.id === entry.id)) continue;
+        try {
+            const preset = readPlanningPreset(entry.preset).preset;
+            preset.name = String(entry.name || preset.name);
+            presetLibrary.push({ id: entry.id, name: preset.name, preset: writePlanningPreset(preset) });
+        } catch { initialWarnings.push(`规划方案“${String(entry.name || '未命名')}”无法读取，请从备份重新导入。`); }
+    }
+    if (!presetLibrary.length) {
+        let preset = structuredClone(defaultPreset);
+        try { if (saved.preset) preset = readPlanningPreset(saved.preset).preset; }
+        catch { initialWarnings.push('旧规划预设无法读取，当前载入内置副本。'); }
+        presetLibrary.push({ id: newId('preset'), name: preset.name, preset: writePlanningPreset(preset) });
+    }
+    const activePreset = presetLibrary.find(entry => entry.id === saved.activePresetId) || presetLibrary[0];
+    const secretCache = new Map();
+    const historicalSecrets = new Set();
+    const extraWorldbooksByChat = Object.fromEntries(Object.entries(saved.extraWorldbooksByChat || {}).map(([id, names]) => [id, bookNames(names)]));
+    const state = { settings: cleanSettings({ ...initialSettings, ...connectionSettings(activeApi) }),
+        preset: readPlanningPreset(activePreset.preset).preset, apiKey: '', input: '', plan: null, rawPlan: '',
+        apiProfiles, activeApiProfileId: activeApi.id, rememberApiKey: false, apiStatus: '', apiBusy: false, models: [],
+        presetLibrary, activePresetId: activePreset.id, planVersions: [],
+        promptPreview: null, promptInspection: null, inspectionStale: true, diagnosis: null,
+        hostCatalog: null, libraryBusy: false, libraryStatus: '', extraWorldbooks: bookNames(extraWorldbooksByChat[ctx.chatId]), importReview: null,
+        status: '准备就绪', stage: 'idle', busy: false, awaitingReview: false, animaStatus: '尚未连接', animaChecking: false,
+        animaDetectedPath: '', animaDetectionStatus: '', animaDetectedVersion: '', logs: [], warnings: initialWarnings, undoDeletion: null, isPreview: false };
+    readProfileSecret(activeApi.id);
+    const runtimeLog = createRuntimeLog({ getSecrets: () => [...historicalSecrets, state.apiKey, ...[...secretCache.values()].map(item => item.key)], limit: 200 });
+    state.logs = runtimeLog.entries;
     let workId = 0, controller = null, gate = null, anchor = null, memory = null;
     let generationToken, preparationError, resuming = null, writerActive = false, disposeReuse = null, worldRevision = 0;
+    let undoDeletionRecord = null, promptSequence = 0;
+    let apiController = null, apiWorkId = 0;
+    let detectionWorkId = 0;
+    let inspectionAnchor = null, diagnosisAnchor = null, currentVersionId = null;
+    let hostGenerating = false, destroyed = false;
+    const versionAnchors = new Map();
     const listeners = [];
     const view = viewFactory({ getState: () => state, onAction });
+    const updater = updaterFactory({ getContext, fetchImpl, extensionUrl, currentVersion, preferences: saved.updatePreferences || {},
+        canInstall: automatic => !destroyed && !state.busy && !state.apiBusy && !state.animaChecking && !state.libraryBusy && !hostGenerating
+            && !(typeof getContext().isGenerating === 'function' ? getContext().isGenerating() : getContext().isGenerating)
+            && !view.hasUnsavedChanges?.() && (!automatic || !view.isOpen?.()),
+        onChange(update, meta = {}) {
+            state.update = update;
+            if (destroyed) return;
+            render();
+            if (meta.notify) {
+                if (update.phase === 'installed') {
+                    log('success', 'extension.update', '扩展更新已下载，等待刷新生效。');
+                    globalThis.toastr?.info('Vespera已更新，保存当前工作后刷新页面生效。');
+                } else if (update.phase === 'available') {
+                    log('info', 'extension.update', '检测到扩展更新。');
+                    globalThis.toastr?.info('Vespera有更新，可在设置中查看。');
+                } else if (['error', 'unsupported'].includes(update.phase)) {
+                    log('warn', 'extension.update.failed', '扩展更新未完成，请查看设置页的更新状态。', { code: update.errorCode });
+                    globalThis.toastr?.warning(update.message);
+                }
+            }
+        },
+    });
+    state.update = updater.state;
     const hostInput = () => document.querySelector('#send_textarea');
     const draft = () => String(hostInput()?.value ?? '');
-    const configSignature = () => JSON.stringify({ settings: state.settings, preset: state.preset });
+    const configSignature = () => JSON.stringify({ settings: planningSettings(state.settings), preset: state.preset, apiProfileId: state.activeApiProfileId, extraWorldbooks: state.extraWorldbooks,
+        presetId: state.activePresetId, animaPath: state.animaDetectedPath || state.settings.animaPath });
     const animaConfigSignature = () => JSON.stringify(getContext().extensionSettings.anima_memory_system ?? null);
-    const settingsForAnima = inputAlreadyInChat => ({ frontendPath: state.settings.animaPath, inputAlreadyInChat });
-    function render() { view.render(); }
+    const settingsForAnima = inputAlreadyInChat => ({ frontendPath: state.animaDetectedPath || state.settings.animaPath, inputAlreadyInChat });
+    function render() {
+        state.inspectionStale = !snapshotCurrent(inspectionAnchor);
+        if (state.promptPreview) state.promptPreview.valid = !state.inspectionStale && !!anchor;
+        const protocol = state.preset.prompts.find(item => item.identifier === 'outline_output');
+        const active = id => state.preset.order.some(item => item.identifier === id && item.enabled !== false) && state.preset.groups.find(g => g.id === state.preset.promptGroups[id])?.enabled !== false;
+        state.importReview = { message: !protocol ? '未找到内置格式条目，请检查预设是否明确要求Vespera的固定输出结构。' : !active(protocol.identifier) ? '格式条目已关闭，模型输出可能无法解析。' : '格式条目已启用；导入预设中的其他输出要求仍需检查。',
+            items: state.preset.prompts.filter(item => !item.marker && (item.identifier === 'outline_output' || (!item.identifier.startsWith('outline_') && /正文|输出|content|格式|状态栏|摘要|总结|文风|视角|字数|八股|自检/i.test(item.name)))).map(item => ({
+                id: item.identifier, name: item.name, kind: item.identifier === 'outline_output' ? 'format' : 'review',
+                reason: item.identifier === 'outline_output' ? '标签名称、层级及顺序是固定接口；故事内容可修改。' : '候选冲突：检查是否要求直接写正文、额外组件或另一套输出格式。不会自动关闭。',
+            })) };
+        view.render();
+    }
+    function currentSnapshot() {
+        return { story: storySnapshot(getContext()), config: configSignature(), input: state.input, draft: draft(), worldRevision, animaConfig: animaConfigSignature() };
+    }
+    function snapshotCurrent(snapshot) {
+        if (!snapshot) return false;
+        try { return JSON.stringify(currentSnapshot()) === JSON.stringify(snapshot); } catch { return false; }
+    }
     function status(message) { state.status = message; render(); }
+    function log(level, event, message, details) { runtimeLog.add(level, event, message, details); }
+    function rememberSecret(value) { if (typeof value === 'string' && value) historicalSecrets.add(value); }
     function persist() {
         const current = getContext();
+        const entry = state.presetLibrary.find(item => item.id === state.activePresetId);
+        if (entry) { entry.name = state.preset.name; entry.preset = writePlanningPreset(state.preset); }
+        const profile = state.apiProfiles.find(item => item.id === state.activeApiProfileId);
         // No key, raw response, recalled memory or plan is saved in ST settings/chat metadata.
-        current.extensionSettings[STORE] = { settings: cleanSettings(state.settings), preset: exportPreset(state.preset) };
+        if (current.chatId) extraWorldbooksByChat[current.chatId] = bookNames(state.extraWorldbooks);
+        current.extensionSettings[STORE] = {
+            settings: cleanSettings({ ...state.settings, ...connectionSettings(profile) }), preset: writePlanningPreset(state.preset),
+            apiProfiles: state.apiProfiles.map(item => ({ id: item.id, name: item.name, ...connectionSettings(item) })),
+            activeApiProfileId: state.activeApiProfileId, presetLibrary: structuredClone(state.presetLibrary), activePresetId: state.activePresetId,
+            extraWorldbooksByChat: structuredClone(extraWorldbooksByChat),
+            updatePreferences: { autoCheck: state.update.autoCheck, autoInstall: state.update.autoInstall },
+        };
         current.saveSettingsDebounced();
+        log('info', 'configuration.saved', '配置已保存。', { promptCount: state.preset.prompts.length, mode: state.settings.mode });
+    }
+    function refreshHostCatalog() {
+        state.libraryBusy = true; render();
+        try {
+            state.hostCatalog = getHostCatalog({ context: getContext(), worldInfoModule: getContext().worldInfoModule });
+            state.libraryStatus = state.hostCatalog.message || '酒馆目录已读取。';
+            log('info', 'library.refreshed', '已读取酒馆世界书与预设目录。'); return state.hostCatalog;
+        } catch { state.libraryStatus = '无法读取酒馆目录，请检查当前酒馆是否提供世界书与预设接口。'; return false; }
+        finally { state.libraryBusy = false; render(); }
+    }
+    function readProfileSecret(id) {
+        let record = secretCache.get(id);
+        if (!record) {
+            let key = null;
+            try { key = globalThis.localStorage?.getItem(keyStorageName(id)) ?? null; } catch { /* Private browsing may forbid local storage. */ }
+            record = { key: typeof key === 'string' ? key : '', remember: key !== null };
+            secretCache.set(id, record);
+        }
+        state.apiKey = record.key; state.rememberApiKey = record.remember;
+        rememberSecret(record.key);
+    }
+    function saveProfileSecret(id, key, remember) {
+        if (typeof key !== 'string') throw new Error('API 密钥必须是文本。');
+        rememberSecret(key);
+        try {
+            if (remember) {
+                if (!globalThis.localStorage) throw new Error('unavailable');
+                globalThis.localStorage.setItem(keyStorageName(id), key);
+            } else globalThis.localStorage?.removeItem(keyStorageName(id));
+        } catch { throw new Error(remember ? '浏览器不允许保存密钥。请关闭“记住密钥”后重试。' : '无法清除浏览器中保存的密钥，请检查浏览器存储权限。'); }
+        secretCache.set(id, { key, remember }); state.apiKey = key; state.rememberApiKey = remember;
+    }
+    function named(value, fallback, label) {
+        const name = value === undefined ? fallback : typeof value === 'string' ? value.trim() : '';
+        if (!name) throw new Error(`${label}名称不能为空。`);
+        return name;
+    }
+    function selectApiProfile(profile) {
+        secretCache.set(state.activeApiProfileId, { key: state.apiKey, remember: state.rememberApiKey });
+        state.activeApiProfileId = profile.id;
+        state.settings = cleanSettings({ ...state.settings, ...connectionSettings(profile) });
+        readProfileSecret(profile.id); state.models = []; state.apiStatus = '';
+    }
+    async function saveApiProfile(payload, asNew = false) {
+        const old = state.apiProfiles.find(item => item.id === state.activeApiProfileId);
+        // Revoking local key storage must not depend on unrelated form validation.
+        if (payload.rememberKey === false) saveProfileSecret(old.id, typeof payload.apiKey === 'string' ? payload.apiKey : state.apiKey, false);
+        const name = named(payload.name ?? payload.profileName, asNew ? `${old.name} 副本` : old.name, 'API 方案');
+        const oldAnimaPath = state.settings.animaPath;
+        const settings = cleanSettings({ ...state.settings, ...payload.settings });
+        proseTarget(settings);
+        if (settings.baseUrl.trim()) normalizeEndpoint(settings.baseUrl);
+        const key = payload.apiKey === undefined ? state.apiKey : payload.apiKey;
+        const remember = payload.rememberKey === undefined ? state.rememberApiKey : payload.rememberKey === true;
+        const profile = { id: asNew ? newId('api') : old.id, name, ...connectionSettings(settings) };
+        if (asNew) secretCache.set(old.id, { key: state.apiKey, remember: state.rememberApiKey });
+        // Storage failure is reported before the saved profile is changed.
+        saveProfileSecret(profile.id, key, remember);
+        if (asNew) state.apiProfiles.push(profile); else Object.assign(old, profile);
+        state.activeApiProfileId = profile.id; state.settings = settings; state.models = [];
+        persist(); state.apiStatus = 'API 方案已保存。'; status('设置已保存。');
+        if (settings.animaPath !== oldAnimaPath) { resetDetection(); await detectAnima(); }
+        return { id: profile.id };
+    }
+    function addPreset(preset, name) {
+        preset.name = named(name, preset.name, '规划预设');
+        const entry = { id: newId('preset'), name: preset.name, preset: writePlanningPreset(preset) };
+        state.presetLibrary.push(entry); state.activePresetId = entry.id; state.preset = preset;
+        clearDeletionUndo(); persist(); return { id: entry.id };
+    }
+    function clearDeletionUndo() { undoDeletionRecord = null; state.undoDeletion = null; }
+    function editablePrompt(id) {
+        const prompt = state.preset.prompts.find(item => item.identifier === id);
+        if (!prompt) throw new Error('条目已不存在，请重新选择。');
+        return prompt;
+    }
+    function promptName(value) {
+        if (typeof value !== 'string' || !value.trim()) throw new Error('条目名称不能为空。');
+        return value.trim();
+    }
+    function promptRole(value) {
+        if (!['system', 'user', 'assistant'].includes(value)) throw new Error('请选择 system、user 或 assistant 消息角色。');
+        return value;
+    }
+    function promptContent(value) {
+        if (typeof value !== 'string') throw new Error('条目内容必须是文本。');
+        return value;
+    }
+    function promptGroup(value) {
+        if (value == null || value === '') return null;
+        if (typeof value !== 'string' || !state.preset.groups.some(group => group.id === value)) throw new Error('所选分组已不存在，请重新选择。');
+        return value;
+    }
+    function setPromptGroup(id, groupId) {
+        if (groupId === null) delete state.preset.promptGroups[id];
+        else state.preset.promptGroups[id] = groupId;
+    }
+    function nextPromptId() {
+        let id;
+        do { id = `plot_workshop_${Date.now().toString(36)}_${(++promptSequence).toString(36)}`; }
+        while (state.preset.prompts.some(prompt => prompt.identifier === id));
+        return id;
     }
     function fail(error) {
-        status(redactSecrets(error?.message || '操作未完成。', [state.apiKey]).slice(0, 500));
+        log('error', 'operation.failed', '当前操作未完成。', { stage: state.stage, code: errorCode(error) });
+        status(redactSecrets(error?.message || '操作未完成。', [...historicalSecrets, state.apiKey]).slice(0, 500));
         view.open();
+    }
+    function resetDetection() {
+        detectionWorkId++; state.animaChecking = false; state.animaDetectedPath = '';
+        state.animaDetectionStatus = ''; state.animaDetectedVersion = ''; state.animaStatus = '尚未检测当前 Anima 路径';
+    }
+    async function detectAnima() {
+        const id = ++detectionWorkId, path = state.settings.animaPath;
+        state.animaChecking = true; state.animaStatus = '正在检测 Anima 安装与就绪状态…';
+        log('info', 'anima.detect.started', '开始检测 Anima 安装与就绪状态。'); render();
+        try {
+            if (typeof anima.detectInstalledAnima !== 'function') throw new Error('检测接口不可用');
+            const result = await anima.detectInstalledAnima({ context: getContext(), settings: { frontendPath: path } });
+            if (id !== detectionWorkId || path !== state.settings.animaPath) return false;
+            if (!result || !['ready', 'not_found', 'not_ready', 'unsupported', 'ambiguous'].includes(result.status)) throw new Error('检测结果无效');
+            if (result.status === 'ready' && (typeof result.frontendPath !== 'string' || !result.frontendPath)) throw new Error('检测结果缺少路径');
+            state.animaDetectionStatus = result.status;
+            state.animaDetectedVersion = typeof result.version === 'string' ? result.version : '';
+            state.animaDetectedPath = result.status === 'ready' ? result.frontendPath : '';
+            state.animaStatus = redactSecrets(String(result.message || 'Anima 检测已结束。'), [...historicalSecrets, state.apiKey]).slice(0, 500);
+            log(result.status === 'ready' ? 'success' : 'warn', 'anima.detect.completed', 'Anima 检测已结束。', { status: result.status, version: state.animaDetectedVersion });
+            return result;
+        } catch (error) {
+            if (id !== detectionWorkId || path !== state.settings.animaPath) return false;
+            state.animaDetectionStatus = 'not_ready'; state.animaDetectedPath = ''; state.animaDetectedVersion = '';
+            state.animaStatus = 'Anima 检测未完成，请重新检测或检查扩展是否加载。';
+            log('error', 'anima.detect.failed', 'Anima 检测未完成。', { code: errorCode(error) }); return false;
+        } finally {
+            if (id === detectionWorkId) { state.animaChecking = false; render(); }
+        }
+    }
+    async function runApiAction(type, payload) {
+        const settings = cleanSettings({ ...state.settings, ...payload.settings });
+        const apiKey = payload.apiKey === undefined ? state.apiKey : payload.apiKey;
+        if (typeof apiKey !== 'string') throw new Error('API 密钥必须是文本。');
+        rememberSecret(apiKey);
+        const id = ++apiWorkId;
+        apiController = new AbortController();
+        const signal = apiController.signal;
+        state.apiBusy = true; state.apiStatus = type === 'fetchModels' ? '正在获取模型列表…' : '正在测试连接…';
+        if (type === 'fetchModels') state.models = [];
+        log('info', type === 'fetchModels' ? 'api.models.started' : 'api.test.started', type === 'fetchModels' ? '开始获取 API 模型列表。' : '开始测试 API 连接。', { model: settings.model }); render();
+        try {
+            const options = { getContext, fetchImpl, baseUrl: settings.baseUrl, model: settings.model, apiKey, signal, timeoutMs: 60000 };
+            const result = await (type === 'fetchModels' ? api.fetchModelList(options) : api.testApiConnection(options));
+            if (id !== apiWorkId || signal.aborted) return false;
+            if (type === 'fetchModels') {
+                if (!Array.isArray(result) || result.some(model => typeof model !== 'string')) throw new Error('模型列表格式无效。');
+                state.models = [...new Set(result)];
+                state.apiStatus = state.models.length ? `已获取 ${state.models.length} 个模型。请选择模型后保存。` : '连接成功，但没有返回可选模型；可以手动填写。';
+            } else {
+                if (!result || typeof result.message !== 'string' || !result.message.trim()) throw new Error('连接测试未返回有效结果。');
+                state.apiStatus = redactSecrets(result.message, [...historicalSecrets, apiKey]).slice(0, 500);
+            }
+            log('success', type === 'fetchModels' ? 'api.models.completed' : 'api.test.completed', type === 'fetchModels' ? 'API 模型列表获取完成。' : 'API 连接测试完成。', { ...(type === 'fetchModels' ? { count: state.models.length } : {}) });
+            render(); return result;
+        } catch (error) {
+            if (id !== apiWorkId || signal.aborted) return false;
+            state.apiStatus = redactSecrets(error?.message || 'API 操作未完成。', [...historicalSecrets, apiKey]).slice(0, 500);
+            log('error', type === 'fetchModels' ? 'api.models.failed' : 'api.test.failed', 'API 操作未完成。', { code: errorCode(error) });
+            render(); return false;
+        } finally {
+            if (id === apiWorkId) { state.apiBusy = false; apiController = null; render(); }
+        }
     }
     function cacheDraft() {
         try {
-            sessionStorage.setItem(`${STORE}:draft:${getContext().chatId}`, JSON.stringify({ xml: state.plan.xml, input: state.input }));
+            sessionStorage.setItem(`${STORE}:draft:${getContext().chatId}`, JSON.stringify({ xml: state.plan?.xml || '', input: state.input,
+                versions: state.planVersions.slice(-20) }));
         } catch { /* Session storage may be unavailable; the visible draft remains usable. */ }
     }
     function restoreDraft() {
         state.plan = null; state.rawPlan = ''; anchor = null; memory = null;
+        state.planVersions = []; state.diagnosis = null; state.promptPreview = null;
+        state.promptInspection = null; inspectionAnchor = null; diagnosisAnchor = null; currentVersionId = null; versionAnchors.clear();
         try {
             const savedDraft = JSON.parse(sessionStorage.getItem(`${STORE}:draft:${getContext().chatId}`));
+            for (const version of (Array.isArray(savedDraft?.versions) ? savedDraft.versions : []).slice(-20)) {
+                try { state.planVersions.push(sanitizeBackup({ format: 'huapi-backup', version: 1, versions: [version] }).versions[0]); } catch { /* Ignore only the malformed version. */ }
+            }
             if (savedDraft?.xml) {
                 state.plan = parseContent(savedDraft.xml); state.rawPlan = savedDraft.xml; state.input = savedDraft.input || '';
                 state.status = '已恢复上次大纲供查看；重新规划后才能自动扩写。';
             }
         } catch { /* A malformed saved draft is never injected. */ }
     }
+    function recordVersion(label) {
+        const version = makeVersion({ xml: state.plan.xml, input: state.input, label, parentId: currentVersionId }, state.planVersions);
+        state.planVersions.push(version); state.planVersions = state.planVersions.slice(-20); currentVersionId = version.id;
+        versionAnchors.set(version.id, { anchor, memory });
+        for (const id of versionAnchors.keys()) if (!state.planVersions.some(item => item.id === id)) versionAnchors.delete(id);
+        cacheDraft();
+    }
+    function refreshPromptPreview() {
+        let valid = false;
+        try { checkAnchor(); valid = !state.inspectionStale; } catch { /* Display stale drafts as such. */ }
+        state.promptPreview = { planner: state.promptInspection?.entries.filter(entry => entry.enabled).flatMap(entry => entry.messages) || [],
+            writer: state.plan && memory ? buildInjectionText({ xml: state.plan.xml, memory: memory.text, target: proseTarget(state.settings), writerRules }) : '',
+            valid, message: valid ? describeInjection(state.settings) : '预览可能已过期或尚无有效大纲；重新读取或生成后再确认扩写。' };
+    }
+    function compileRound(planningContext, recalled, target, extraBooks = { text: '', books: [] }) {
+        const compiled = compilePreset(state.preset, { context: { ...planningContext,
+            animaMemory: recalled.text, animaStatus: recalled.status === 'empty' ? 'empty' : 'success' }, targetLength: target });
+        for (const book of extraBooks.books) {
+            const contents = extraBooks.entries.filter(entry => entry.book === book.name).map(entry => `${entry.comment ? `${entry.comment}\n` : ''}${entry.content}`).join('\n\n');
+            const messages = contents ? [{ role: 'system', content: `【额外参考世界书：${book.name}；按启用条目提供，未做关键词触发】\n${contents}` }] : [];
+            compiled.messages.push(...messages);
+            compiled.entries.push({ id: `worldbook:${book.name}`, name: `额外世界书 · ${book.name}`, kind: 'runtime', order: compiled.entries.length + 1, enabled: true, messages });
+        }
+        const sources = [
+            { name: '角色卡', status: planningContext.charDescription || planningContext.charPersonality || planningContext.scenario ? '已读取' : '已读取 · 空', detail: '以本轮酒馆角色卡与覆盖字段为准。' },
+            { name: '聊天历史', status: planningContext.chatHistory.length ? '已读取' : '已读取 · 空', detail: `${planningContext.chatHistory.length} 条历史消息；当前输入单独提供。` },
+            { name: '世界书', status: planningContext.worldInfoBefore || planningContext.worldInfoAfter ? '已读取' : '已读取 · 无命中', detail: '本轮干扫描命中的条目，未命中不等于读取失败。' },
+            { name: 'Anima', status: recalled.status === 'empty' ? '已读取 · 无相关记忆' : '已读取', detail: recalled.reusedForRound ? '复用本轮有效召回。' : '召回完成，沿用 Anima 的记忆保留规则。' },
+            ...extraBooks.books.map(book => ({ name: `额外世界书 · ${book.name}`, status: book.count ? '已读取' : '已读取 · 空', detail: `${book.count} 个启用条目。仅本轮规划使用。` })),
+        ];
+        state.promptInspection = buildPromptInspection({ preset: state.preset, compiled, sources, model: state.settings.model });
+        inspectionAnchor = currentSnapshot(); state.inspectionStale = false;
+        state.warnings = compiled.warnings;
+        state.promptPreview = { planner: compiled.messages, writer: '', valid: false, message: '规划请求资料已展开；尚未生成本轮大纲。' };
+        return compiled;
+    }
+    async function inspectOrDiagnose(diagnose = false) {
+        const userInput = String(state.input || draft());
+        if (diagnose) { normalizeEndpoint(state.settings.baseUrl); if (!state.settings.model.trim()) throw new Error('请先选择规划模型。'); }
+        state.busy = true; render();
+        try {
+            const preparationId = ++workId;
+            await anima.installAnimaObserver({ settings: settingsForAnima(false) });
+            if (preparationId !== workId) throw Object.assign(new Error('操作已取消。'), { code: 'CANCELLED' });
+            const committed = !draft() && getContext().chat.at(-1)?.is_user && getContext().chat.at(-1).mes === userInput;
+            const { compiled } = await performPlan(userInput, { committed, inspectOnly: true });
+            if (!diagnose) return;
+            const expected = inspectionAnchor, signal = controller.signal;
+            const messages = compiled.entries.filter(item => item.kind === 'context' || item.kind === 'runtime').flatMap(item => item.messages);
+            let diagnosedXml = '';
+            try { checkAnchor(); diagnosedXml = state.plan.xml; } catch { /* Do not diagnose a stale plan as the current plan. */ }
+            if (diagnosedXml) messages.push({ role: 'user', content: `【待执行的大纲，尚未发生】\n${diagnosedXml}` });
+            state.stage = 'planning'; status('正在诊断本轮剧情…');
+            log('info', 'diagnosis.started', '用户主动请求剧情诊断。');
+            const result = await (api.requestDiagnosis || requestDiagnosis)({ getContext, fetchImpl, baseUrl: state.settings.baseUrl,
+                model: state.settings.model, apiKey: state.apiKey, messages, signal, timeoutMs: 180000 });
+            if (signal.aborted || !snapshotCurrent(expected)) throw new Error('诊断期间输入或上下文已变化，请重新诊断。');
+            state.diagnosis = result; diagnosisAnchor = { snapshot: expected, xml: state.plan?.xml || '' };
+            log('success', 'diagnosis.completed', '剧情诊断已完成，等待用户选择。');
+            state.stage = 'review'; status('诊断完成；选择建议后可修改本轮输入。');
+        } catch (error) { if (!['CANCELLED', 'ABORTED'].includes(error.code)) anchor = null; throw error; }
+        finally { state.busy = false; render(); }
+    }
+    function exportBackup() {
+        persist();
+        const data = sanitizeBackup({ format: 'huapi-backup', version: 1, settings: state.settings,
+            apiProfiles: state.apiProfiles, presetLibrary: state.presetLibrary, versions: state.planVersions, extraWorldbooks: state.extraWorldbooks });
+        download(JSON.stringify({ format: 'huapi-backup', version: 1, ...data }, null, 2), 'Vespera-备份.json', 'application/json');
+        log('info', 'backup.exported', '设置、方案和当前聊天的大纲版本已导出，不含密钥和原始记忆。'); status('备份已导出。');
+    }
+    function importBackup(text) {
+        const data = sanitizeBackup(text);
+        // Validate the whole file before changing anything; imported profiles are new copies.
+        const profiles = data.apiProfiles.map(profile => ({ ...profile, id: newId('api') }));
+        const presets = data.presetLibrary.map(entry => ({ ...entry, id: newId('preset') }));
+        const versionIds = new Map(data.versions.map(version => [version.id, newId('version')]));
+        const versions = data.versions.map(version => ({ ...version, id: versionIds.get(version.id), parentId: versionIds.get(version.parentId) || null }));
+        state.apiProfiles.push(...profiles); state.presetLibrary.push(...presets);
+        if (profiles.length) selectApiProfile(profiles[0]);
+        const profile = state.apiProfiles.find(item => item.id === state.activeApiProfileId);
+        state.settings = cleanSettings({ ...data.settings, ...connectionSettings(profile) });
+        if (presets.length) { state.activePresetId = presets[0].id; state.preset = readPlanningPreset(presets[0].preset).preset; }
+        state.planVersions = [...state.planVersions, ...versions].slice(-20);
+        state.extraWorldbooks = data.extraWorldbooks;
+        state.plan = null; state.rawPlan = ''; anchor = null; memory = null; inspectionAnchor = null; diagnosisAnchor = null;
+        state.promptInspection = null; state.promptPreview = null; state.diagnosis = null; currentVersionId = null;
+        resetDetection(); clearDeletionUndo(); clearInjection(getContext()); persist(); cacheDraft();
+        log('success', 'backup.imported', '备份已导入为新方案；旧大纲仅供查看，须重新规划。');
+        status('已导入备份副本；密钥需另填，旧大纲不能直接自动扩写。');
+    }
     function cancel(message = '已取消；大纲没有写入聊天。') {
+        log('info', 'operation.cancelled', '当前操作已取消，临时注入已清理。', { stage: state.stage });
+        detectionWorkId++;
+        if (state.animaChecking) state.animaStatus = '已取消 Anima 检测。';
+        state.animaChecking = false;
+        apiWorkId++; apiController?.abort(); apiController = null;
+        if (state.apiBusy) state.apiStatus = '已取消 API 操作。';
+        state.apiBusy = false;
         const wasWriting = writerActive; writerActive = false;
         workId++; controller?.abort(); controller = null;
         gate?.resolve(false); gate = null;
@@ -77,13 +472,17 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     function inject() {
         const fixedAnchor = anchor;
         injectForTurn(getContext(), { xml: state.plan.xml, memory: memory?.text || '', target: proseTarget(state.settings), writerRules,
+            injection: { position: state.settings.injectionPosition, depth: state.settings.injectionDepth, role: state.settings.injectionRole },
             valid: () => !!writerActive && anchor === fixedAnchor && getContext().chatId === fixedAnchor.chatId });
+        log('info', 'writer.injected', describeInjection(state.settings), { position: state.settings.injectionPosition, depth: Number(state.settings.injectionDepth), role: state.settings.injectionRole });
         writerActive = true;
     }
-    async function performPlan(userInput, { committed = false, token, maxContext } = {}) {
+    async function performPlan(userInput, { committed = false, token, maxContext, inspectOnly = false } = {}) {
         if (!userInput.trim()) throw new Error('请先填写本轮输入。');
-        normalizeEndpoint(state.settings.baseUrl);
-        if (!state.settings.model.trim()) throw new Error('请先在设置中填写规划模型名称。');
+        if (!inspectOnly) {
+            normalizeEndpoint(state.settings.baseUrl);
+            if (!state.settings.model.trim()) throw new Error('请先在设置中填写规划模型名称。');
+        }
         const target = proseTarget(state.settings);
         assertChat(getContext());
         const id = ++workId;
@@ -92,6 +491,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         const initialStory = storySnapshot(getContext()), initialConfig = configSignature(), initialDraft = draft();
         let planningRevision, planningAnimaConfig;
         state.input = userInput; state.busy = true; state.awaitingReview = false;
+        const previousAnchor = anchor, previousMemory = memory;
         anchor = null; clearInjection(getContext());
         const check = () => {
             if (id !== workId || signal.aborted) throw Object.assign(new Error('本轮规划已取消。'), { code: 'CANCELLED' });
@@ -100,12 +500,14 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             if (planningAnimaConfig !== undefined && planningAnimaConfig !== animaConfigSignature()) throw new Error('规划期间 Anima 配置已改变，请重新规划。');
         };
         state.stage = 'memory'; status('正在读取本轮 Anima 记忆…');
+        log('info', 'anima.recall.started', '开始读取本轮 Anima 记忆。');
         // The Anima adapter shares a completed recall only within this exact story/input round.
         const baseStory = storySnapshot(getContext(), committed ? { dropLastInput: userInput } : {});
         memory = await anima.recallAnima({ context: getContext(), userInput, signal,
                 settings: settingsForAnima(committed), generationToken: token,
                 onStatus: message => { if (id === workId) { state.animaStatus = message; render(); } } });
         check();
+        log('success', 'anima.recall.completed', '本轮 Anima 记忆读取完成。', { status: memory.status, reused: memory.reusedForRound === true });
         state.animaStatus = memory.reusedForRound ? '已读取本轮记忆；重新规划不额外消耗保留次数' : memory.status === 'empty' ? '本轮读取成功，没有相关结果' : `已读取本轮记忆 · ${memory.source}`;
         check();
         status('正在读取角色卡与世界书…');
@@ -113,10 +515,25 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         planningAnimaConfig = animaConfigSignature();
         const planningContext = await collectPlanningContext(getContext(), userInput, { inputAlreadyInChat: committed, maxContext });
         check();
-        const compiled = compilePreset(state.preset, { context: { ...planningContext,
-            animaMemory: memory.text, animaStatus: memory.status === 'empty' ? 'empty' : 'success' }, targetLength: target });
-        state.warnings = compiled.warnings;
+        let extraBooks = { text: '', books: [], entries: [] };
+        if (state.extraWorldbooks.length) {
+            const catalog = getHostCatalog({ context: getContext(), worldInfoModule: getContext().worldInfoModule });
+            if (!catalog.mountsKnown) throw new Error('尚未确认酒馆当前挂载的世界书，无法安全加入额外世界书。请先刷新目录。');
+            extraBooks = await readExtraWorldbooks({ context: getContext(), names: state.extraWorldbooks,
+                mountedNames: catalog.worldbooks.filter(book => book.mounted).map(book => book.name), signal });
+            check();
+        }
+        const compiled = compileRound(planningContext, memory, target, extraBooks);
+        if (inspectOnly) {
+            if (previousAnchor && previousMemory?.text === memory.text && previousMemory?.status === memory.status) {
+                anchor = previousAnchor;
+                try { checkAnchor(); } catch { anchor = null; }
+            }
+            state.stage = state.plan ? 'review' : 'idle'; refreshPromptPreview();
+            status('本轮资料已读取，可检查条目与估算用量。'); return { compiled, planningContext };
+        }
         state.stage = 'planning'; status('规划模型正在生成本轮大纲…');
+        log('info', 'planner.request.started', '开始请求本轮大纲。', { model: state.settings.model, messageCount: compiled.messages.length });
         const result = await requestPlan({ baseUrl: state.settings.baseUrl, model: state.settings.model, apiKey: state.apiKey,
             messages: compiled.messages, signal, timeoutMs: 180000,
             ...(state.settings.temperature !== '' ? { temperature: Number(state.settings.temperature) } : {}),
@@ -124,9 +541,10 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             transport: createSTTransport(getContext, fetchImpl), DOMParser: globalThis.DOMParser });
         check();
         state.plan = result; state.rawPlan = result.xml;
+        log('success', 'planner.request.completed', '本轮大纲已生成并通过格式校验。');
         anchor = { story: initialStory, baseStory, config: initialConfig, draft: initialDraft,
             input: userInput, committed, chatId: getContext().chatId, worldRevision, animaConfig: planningAnimaConfig };
-        cacheDraft();
+        recordVersion('生成大纲'); refreshPromptPreview();
         state.stage = 'review'; status('本轮大纲已生成，可以编辑、复制或确认扩写。');
         return result;
     }
@@ -142,6 +560,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         try { checkAnchor({ afterSubmission: true }); return true; } catch { return false; }
     }
     async function confirmAndWrite() {
+        if (state.apiBusy || state.animaChecking) throw new Error('请先完成或取消 API 操作或 Anima 检测。');
         checkAnchor();
         if (state.settings.mode === 'manual') throw new Error('当前为仅生成大纲模式。可以复制或填入输入框；自动扩写需切换模式后重新规划。');
         if (gate) { gate.resolve(true); view.close(); return; }
@@ -156,6 +575,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         hostInput().value = anchor.committed ? '' : state.input;
         hostInput().dispatchEvent(new Event('input', { bubbles: true }));
         state.stage = 'writing'; status('已确认，正在调用酒馆主模型扩写…');
+        log('info', 'writer.request.started', '已确认大纲，开始调用酒馆主模型扩写。');
         view.close();
         try { await current.generate('normal'); }
         finally {
@@ -164,6 +584,8 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         }
     }
     async function intercept(chat, maxContext, abort, type) {
+        if (state.update.phase === 'installing') { abort(true); status('Vespera正在更新，请完成后再生成。'); return; }
+        if (preparationError?.code === 'CANCELLED') { preparationError = null; abort(true); clearInjection(getContext()); return; }
         if (resuming) {
             try { checkAnchor({ afterSubmission: true }); writerActive = true; inject(); }
             catch (e) { abort(true); fail(e); }
@@ -171,7 +593,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         }
         if (!state.settings.autoOnSend || type === 'quiet' || type === 'impersonate') return;
         if (!normalType(type)) { abort(true); fail(new Error('首版自动规划支持普通发送。续写、重生成或滑动分支请先关闭“发送时自动规划”。')); return; }
-        if (state.busy) { abort(true); fail(new Error('已有规划正在进行，请先完成或取消。')); return; }
+        if (state.busy || state.apiBusy || state.animaChecking) { abort(true); fail(new Error('已有规划、API 操作或 Anima 检测正在进行，请先完成或取消。')); return; }
         try {
             if (preparationError) throw preparationError;
             const last = getContext().chat.at(-1);
@@ -186,11 +608,130 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     }
     async function onAction(type, payload = {}) {
         try {
-            const editable = ['settings', 'apiKey', 'importPreset', 'selectPreset', 'editPrompt', 'promptToggle', 'groupToggle', 'input'];
-            if (state.busy && editable.includes(type)) throw new Error('请先完成或取消当前规划，再修改输入或设置。');
-            if (type === 'input') { state.input = payload.value; return; }
-            if (type === 'apiKey') { state.apiKey = payload.value; return; }
-            if (type === 'settings') { state.settings = cleanSettings({ ...state.settings, ...payload }); persist(); render(); return; }
+            if (type === 'checkUpdate') return await updater.check();
+            if (type === 'installUpdate') return await updater.install();
+            if (type === 'updatePreferences') { updater.setPreferences(payload); persist(); render(); return; }
+            if (type === 'reloadUpdate') {
+                if (state.update.phase !== 'installed') return false;
+                const reloadBlocked = () => destroyed || state.busy || state.apiBusy || state.animaChecking || state.libraryBusy || hostGenerating || view.hasUnsavedChanges?.()
+                    || (typeof getContext().isGenerating === 'function' ? getContext().isGenerating() : getContext().isGenerating);
+                if (reloadBlocked()) {
+                    status('请先保存修改并结束当前生成，再刷新页面。'); return false;
+                }
+                cacheDraft(); persist();
+                if (typeof getContext().saveSettings === 'function') await getContext().saveSettings();
+                if (reloadBlocked()) { if (!destroyed) status('当前操作已变化，请结束编辑或生成后再刷新。'); return false; }
+                reloadPage(); return;
+            }
+            if (state.update.phase === 'installing' && !['copyLogs', 'exportLogs', 'clearLogs'].includes(type)) throw new Error('扩展正在更新，请稍后再操作。');
+            const editable = ['settings', 'apiKey', 'importPreset', 'selectPreset', 'createPrompt', 'editPrompt', 'duplicatePrompt', 'movePrompt', 'deletePrompt', 'undoDeletePrompt', 'promptToggle', 'groupToggle', 'input',
+                'apiProfileSelect', 'apiProfileNew', 'apiProfileSave', 'apiProfileSaveAs', 'apiProfileDelete', 'saveSettings', 'fetchModels', 'testApi',
+                'presetSave', 'presetSaveAs', 'presetSelect', 'presetDelete', 'presetNew', 'detectAnima',
+                'inspectPrompts', 'diagnose', 'applyDiagnosis', 'restoreVersion', 'importBackup', 'exportBackup'];
+            editable.push('refreshHostCatalog', 'importHostPreset', 'extraWorldbooks');
+            if ((state.busy || state.apiBusy || state.animaChecking || state.libraryBusy) && editable.includes(type)) throw new Error('请先完成或取消当前操作，再修改输入或设置。');
+            if ((state.apiBusy || state.animaChecking) && ['generate', 'confirmAndWrite'].includes(type)) throw new Error('请先完成或取消 API 操作或 Anima 检测。');
+            if (type === 'input') { state.input = payload.value; render(); return; }
+            if (type === 'refreshHostCatalog') return refreshHostCatalog();
+            if (type === 'importHostPreset') {
+                const preset = readHostPreset({ context: getContext(), id: payload.id });
+                return await onAction('importPreset', { text: JSON.stringify(preset), name: preset.name || state.hostCatalog?.presets?.find(item => item.id === payload.id)?.name });
+            }
+            if (type === 'extraWorldbooks') {
+                assertChat(getContext());
+                const names = bookNames(payload.names);
+                if (names.length > 50) throw new Error('最多选择 50 本额外世界书。');
+                state.extraWorldbooks = names; persist(); status('当前聊天的额外世界书选择已保存。'); return;
+            }
+            if (type === 'inspectPrompts' || type === 'diagnose') { await inspectOrDiagnose(type === 'diagnose'); return; }
+            if (type === 'previewPrompts') { refreshPromptPreview(); render(); return; }
+            if (type === 'applyDiagnosis') {
+                if (!snapshotCurrent(diagnosisAnchor?.snapshot) || diagnosisAnchor.xml !== (state.plan?.xml || '')) throw new Error('诊断对应的输入、大纲或上下文已变化，请重新诊断。');
+                const option = state.diagnosis?.options?.[payload.index];
+                if (!Number.isInteger(payload.index) || !option) throw new Error('请选择有效的诊断建议。');
+                state.input = `${state.input}\n\n【本轮调整要求】\n${option.direction}`;
+                diagnosisAnchor = null; anchor = null;
+                cacheDraft(); status('建议已填入本轮输入；可修改后重新生成大纲。'); return;
+            }
+            if (type === 'restoreVersion') {
+                const version = state.planVersions.find(item => item.id === payload.id);
+                if (!version) throw new Error('大纲版本已不存在。');
+                state.plan = parseContent(version.xml); state.rawPlan = state.plan.xml; state.input = version.input;
+                const stored = versionAnchors.get(version.id); anchor = stored?.anchor || null; memory = stored?.memory || null;
+                try { checkAnchor(); } catch { anchor = null; memory = null; }
+                currentVersionId = version.id; state.stage = 'review'; cacheDraft(); refreshPromptPreview();
+                diagnosisAnchor = null;
+                log('info', 'version.restored', '已恢复大纲版本，未修改聊天或 Anima 记忆。');
+                status(anchor ? '大纲已恢复，当前输入与上下文仍匹配。' : '已恢复旧大纲供查看；上下文不匹配，重新规划后才能自动扩写。'); return;
+            }
+            if (type === 'exportBackup') { exportBackup(); return; }
+            if (type === 'importBackup') { importBackup(payload.text); return; }
+            if (type === 'apiKey') {
+                if (typeof payload.value !== 'string') throw new Error('API 密钥必须是文本。');
+                state.apiKey = payload.value; rememberSecret(payload.value);
+                secretCache.set(state.activeApiProfileId, { key: state.apiKey, remember: state.rememberApiKey }); return;
+            }
+            if (type === 'settings') {
+                const oldPath = state.settings.animaPath;
+                state.settings = cleanSettings({ ...state.settings, ...payload }); persist(); render();
+                if (state.settings.animaPath !== oldPath) { resetDetection(); await detectAnima(); }
+                return;
+            }
+            if (type === 'saveSettings' || type === 'apiProfileSave' || type === 'apiProfileSaveAs') return await saveApiProfile(payload, type === 'apiProfileSaveAs');
+            if (type === 'detectAnima') return await detectAnima();
+            if (type === 'copyLogs') { await copyText(runtimeLog.text()); status('当前会话日志已复制。'); return; }
+            if (type === 'exportLogs') { download(runtimeLog.text(), 'Vespera-运行日志.txt', 'text/plain;charset=utf-8'); return; }
+            if (type === 'clearLogs') { runtimeLog.clear(); status('当前会话日志已清空。'); return; }
+            if (type === 'apiProfileSelect') {
+                const profile = state.apiProfiles.find(item => item.id === payload.id);
+                if (!profile) throw new Error('API 方案已不存在。');
+                selectApiProfile(profile); persist(); status('已切换 API 方案。'); return { id: profile.id };
+            }
+            if (type === 'apiProfileNew') {
+                const profile = { id: newId('api'), name: `API 方案 ${state.apiProfiles.length + 1}`, ...connectionSettings() };
+                state.apiProfiles.push(profile); selectApiProfile(profile); persist(); status('已创建空白 API 方案，请填写后保存。'); return { id: profile.id };
+            }
+            if (type === 'apiProfileDelete') {
+                const profile = state.apiProfiles.find(item => item.id === payload.id);
+                if (!profile) throw new Error('API 方案已不存在。');
+                if (state.apiProfiles.length === 1) throw new Error('请至少保留一套 API 方案。');
+                try { globalThis.localStorage?.removeItem(keyStorageName(profile.id)); }
+                catch { throw new Error('无法清除这套方案保存的密钥，请检查浏览器存储权限。'); }
+                state.apiProfiles = state.apiProfiles.filter(item => item.id !== profile.id);
+                if (state.activeApiProfileId === profile.id) selectApiProfile(state.apiProfiles[0]);
+                secretCache.delete(profile.id);
+                persist(); status('API 方案已删除。'); return { id: profile.id };
+            }
+            if (type === 'fetchModels' || type === 'testApi') return await runApiAction(type, payload);
+            if (type === 'presetSave') {
+                state.preset.name = named(payload.name, state.preset.name, '规划预设'); persist(); status('规划预设已保存。'); return { id: state.activePresetId };
+            }
+            if (type === 'presetSaveAs') {
+                const copy = structuredClone(state.preset);
+                const result = addPreset(copy, named(payload.name, `${copy.name} 副本`, '规划预设')); status('规划预设已另存为新方案。'); return result;
+            }
+            if (type === 'presetNew' || type === 'selectPreset') {
+                const result = addPreset(structuredClone(defaultPreset), type === 'presetNew' ? named(payload.name, '新规划预设', '规划预设') : defaultPreset.name);
+                status('已建立内置预设副本，原有方案仍保留在预设库中。'); return result;
+            }
+            if (type === 'presetSelect') {
+                const entry = state.presetLibrary.find(item => item.id === payload.id);
+                if (!entry) throw new Error('规划预设已不存在。');
+                const selected = readPlanningPreset(entry.preset).preset;
+                selected.name = entry.name; state.activePresetId = entry.id; state.preset = selected;
+                clearDeletionUndo(); persist(); status('已切换规划预设。'); return { id: entry.id };
+            }
+            if (type === 'presetDelete') {
+                const entry = state.presetLibrary.find(item => item.id === payload.id);
+                if (!entry) throw new Error('规划预设已不存在。');
+                if (state.presetLibrary.length === 1) throw new Error('请至少保留一套规划预设。');
+                state.presetLibrary = state.presetLibrary.filter(item => item.id !== entry.id);
+                if (state.activePresetId === entry.id) {
+                    const next = state.presetLibrary[0];
+                    state.preset = readPlanningPreset(next.preset).preset; state.preset.name = next.name; state.activePresetId = next.id; clearDeletionUndo();
+                }
+                persist(); status('规划预设已删除。'); return { id: entry.id };
+            }
             if (type === 'groupToggle') { const g = state.preset.groups.find(x => x.id === payload.id); if (g) g.enabled = payload.enabled; persist(); render(); return; }
             if (type === 'promptToggle') {
                 const p = state.preset.order.find(x => x.identifier === payload.identifier);
@@ -198,28 +739,110 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
                 else if (state.preset.prompts.some(x => x.identifier === payload.identifier)) state.preset.order.push({ identifier: payload.identifier, enabled: payload.enabled });
                 persist(); render(); return;
             }
-            if (type === 'editPrompt') { const p = state.preset.prompts.find(x => x.identifier === payload.id); if (p && !p.marker) p.content = payload.content; persist(); status('条目已保存。'); return; }
-            if (type === 'selectPreset') { state.preset = structuredClone(defaultPreset); persist(); status('已载入内置规划预设。'); return; }
+            if (type === 'createPrompt') {
+                const name = promptName(payload.name ?? '新条目');
+                const content = promptContent(payload.content ?? '');
+                const role = promptRole(payload.role ?? 'system');
+                const groupId = promptGroup(payload.groupId);
+                const id = nextPromptId();
+                const lastInGroup = groupId === null ? -1 : state.preset.order.reduce((last, item, index) => state.preset.promptGroups[item.identifier] === groupId ? index : last, -1);
+                state.preset.prompts.push({ identifier: id, name, content, role, enabled: true, marker: false,
+                    system_prompt: false, forbid_overrides: true, injection_position: 0, injection_depth: 4, injection_order: 100, injection_trigger: [] });
+                state.preset.order.splice(lastInGroup < 0 ? state.preset.order.length : lastInGroup + 1, 0, { identifier: id, enabled: true });
+                setPromptGroup(id, groupId);
+                persist(); status('条目已创建并启用。'); return { id };
+            }
+            if (type === 'editPrompt') {
+                const prompt = editablePrompt(payload.id);
+                // Validate every supplied field before changing the preset. Marker payloads
+                // remain host-provided; their content and role are intentionally read-only.
+                const name = payload.name === undefined ? prompt.name : promptName(payload.name);
+                const content = prompt.marker || payload.content === undefined ? prompt.content : promptContent(payload.content);
+                const role = prompt.marker || payload.role === undefined ? prompt.role : promptRole(payload.role);
+                const groupId = payload.groupId === undefined ? undefined : promptGroup(payload.groupId);
+                Object.assign(prompt, { name, content, role });
+                if (groupId !== undefined) setPromptGroup(prompt.identifier, groupId);
+                persist(); status('条目已保存。'); return { id: prompt.identifier };
+            }
+            if (type === 'duplicatePrompt') {
+                const original = editablePrompt(payload.id);
+                if (original.marker) throw new Error('此条目是酒馆资料占位，不能复制。可以新增普通提示词条目。');
+                const id = nextPromptId();
+                const prompt = { ...structuredClone(original), identifier: id, name: `${original.name} 副本` };
+                state.preset.prompts.splice(state.preset.prompts.indexOf(original) + 1, 0, prompt);
+                const originalIndex = state.preset.order.findIndex(item => item.identifier === original.identifier);
+                const orderEntry = { identifier: id, enabled: originalIndex >= 0 && state.preset.order[originalIndex].enabled !== false };
+                const groupId = state.preset.promptGroups[original.identifier] ?? null;
+                const lastInGroup = state.preset.order.reduce((last, item, index) => (state.preset.promptGroups[item.identifier] ?? null) === groupId ? index : last, -1);
+                state.preset.order.splice(originalIndex >= 0 ? originalIndex + 1 : lastInGroup >= 0 ? lastInGroup + 1 : state.preset.order.length, 0, orderEntry);
+                setPromptGroup(id, groupId);
+                persist(); status('条目副本已保存。'); return { id };
+            }
+            if (type === 'movePrompt') {
+                const prompt = editablePrompt(payload.id);
+                const groupId = payload.groupId === undefined ? state.preset.promptGroups[prompt.identifier] ?? null : promptGroup(payload.groupId);
+                const beforeId = payload.beforeId ?? null;
+                if (beforeId === prompt.identifier) return { id: prompt.identifier };
+                const before = beforeId === null ? null : editablePrompt(beforeId);
+                if (before && (state.preset.promptGroups[before.identifier] ?? null) !== groupId) throw new Error('请选择同一分组中的排序位置。');
+                const ordered = state.preset.order.map(item => ({ ...item }));
+                const oldIndex = ordered.findIndex(item => item.identifier === prompt.identifier);
+                const moving = oldIndex < 0 ? { identifier: prompt.identifier, enabled: false } : ordered.splice(oldIndex, 1)[0];
+                if (before && !ordered.some(item => item.identifier === before.identifier)) ordered.push({ identifier: before.identifier, enabled: false });
+                const lastInGroup = ordered.reduce((last, item, index) => (state.preset.promptGroups[item.identifier] ?? null) === groupId ? index : last, -1);
+                const index = before ? ordered.findIndex(item => item.identifier === before.identifier) : lastInGroup >= 0 ? lastInGroup + 1 : ordered.length;
+                ordered.splice(index, 0, moving);
+                state.preset.order = ordered; setPromptGroup(prompt.identifier, groupId);
+                persist(); status('条目顺序已保存。'); return { id: prompt.identifier };
+            }
+            if (type === 'deletePrompt') {
+                const prompt = editablePrompt(payload.id);
+                const promptIndex = state.preset.prompts.indexOf(prompt);
+                const orderIndex = state.preset.order.findIndex(item => item.identifier === prompt.identifier);
+                undoDeletionRecord = { preset: state.preset, prompt: structuredClone(prompt), promptIndex, orderIndex,
+                    orderEntry: orderIndex < 0 ? null : structuredClone(state.preset.order[orderIndex]),
+                    groupId: state.preset.promptGroups[prompt.identifier] ?? null };
+                state.preset.prompts.splice(promptIndex, 1);
+                if (orderIndex >= 0) state.preset.order.splice(orderIndex, 1);
+                delete state.preset.promptGroups[prompt.identifier];
+                state.undoDeletion = { id: prompt.identifier, name: prompt.name };
+                persist(); status(`已删除“${prompt.name}”，可以撤销。`); return { id: prompt.identifier };
+            }
+            if (type === 'undoDeletePrompt') {
+                const record = undoDeletionRecord;
+                if (!record || record.preset !== state.preset) throw new Error('当前没有可撤销的条目删除。');
+                const id = record.prompt.identifier;
+                if (state.preset.prompts.some(prompt => prompt.identifier === id) || state.preset.order.some(item => item.identifier === id)) throw new Error('同名标识的条目已经存在，未重复恢复。');
+                promptGroup(record.groupId);
+                state.preset.prompts.splice(Math.min(record.promptIndex, state.preset.prompts.length), 0, structuredClone(record.prompt));
+                if (record.orderEntry) state.preset.order.splice(Math.min(record.orderIndex, state.preset.order.length), 0, structuredClone(record.orderEntry));
+                setPromptGroup(id, record.groupId);
+                clearDeletionUndo();
+                persist(); status(`已恢复“${record.prompt.name}”。`); return { id };
+            }
             if (type === 'importPreset') {
                 if (payload.text.length > 5_000_000) throw new Error('预设文件过大，请使用不超过 5 MB 的 JSON。');
-                const imported = normalizePreset(JSON.parse(payload.text), { name: payload.name?.replace(/\.json$/i, '') || '导入预设' });
-                if (!imported.prompts.some(x => x.identifier === 'outline_output')) {
+                const { preset: imported, preserveSelection } = readPlanningPreset(JSON.parse(payload.text), { name: payload.name?.replace(/\.json$/i, '') || '导入预设' });
+                if (!preserveSelection && !imported.prompts.some(x => x.identifier === 'outline_output')) {
                     const protocol = structuredClone(defaultPreset.prompts.find(x => x.identifier === 'outline_output'));
                     protocol.content = '本次请求只生成下一条回复的具体剧情大纲，正文由另一模型扩写。沿用已启用条目的人物与剧情要求。\n\n' + protocol.content;
                     imported.prompts.push(protocol); imported.order.push({ identifier: protocol.identifier, enabled: true });
-                    const group = { id: 'workshop_protocol', name: '规划交付格式', enabled: true, collapsed: false, order: imported.groups.length };
-                    imported.groups.push(group); imported.promptGroups[protocol.identifier] = group.id;
+                    let group = imported.groups.find(item => item.id === 'workshop_protocol');
+                    if (!group) { group = { id: 'workshop_protocol', name: '规划交付格式', enabled: true, collapsed: false, order: imported.groups.length }; imported.groups.push(group); }
+                    imported.promptGroups[protocol.identifier] = group.id;
                 }
                 imported.warnings.push('已保留原预设条目。请关闭原来的正文输出、状态栏等冲突模块，并将正文字数配置为两阶段共享目标。');
-                state.preset = imported; persist(); status('预设已导入；请在条目列表中检查启用项和输出要求。'); return;
+                const result = addPreset(imported); status('已作为新方案导入；请检查启用项和输出要求。'); return result;
             }
-            if (type === 'exportPreset') { download(JSON.stringify(exportPreset(state.preset), null, 2), `${state.preset.name}.json`, 'application/json'); return; }
+            if (type === 'exportPreset') { download(JSON.stringify(writePlanningPreset(state.preset), null, 2), `${state.preset.name}.json`, 'application/json'); return; }
             if (type === 'cancel') { cancel(); return; }
             if (type === 'generate') {
                 if (state.busy) return;
                 state.busy = true; render();
                 try {
+                    const preparationId = ++workId;
                     await anima.installAnimaObserver({ settings: settingsForAnima(false) });
+                    if (preparationId !== workId) throw Object.assign(new Error('操作已取消。'), { code: 'CANCELLED' });
                     const committed = !draft() && getContext().chat.at(-1)?.is_user && getContext().chat.at(-1).mes === payload.input;
                     await performPlan(String(payload.input ?? state.input), { committed });
                     state.busy = false; render();
@@ -227,7 +850,11 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
                 } finally { if (!writerActive) { state.busy = false; render(); } }
                 return;
             }
-            if (type === 'applyPlanEdit') { state.plan = parseContent(payload.xml); state.rawPlan = state.plan.xml; cacheDraft(); status('大纲修改已校验并应用。'); return; }
+            if (type === 'applyPlanEdit') {
+                if (state.busy && !state.awaitingReview) throw new Error('请先完成当前操作再修改大纲。');
+                state.plan = parseContent(payload.xml); state.rawPlan = state.plan.xml; diagnosisAnchor = null;
+                recordVersion('手动修改'); refreshPromptPreview(); status('大纲修改已校验并应用。'); return;
+            }
             if (type === 'confirmAndWrite') { await confirmAndWrite(); return; }
             if (type === 'copy' || type === 'fillInput') {
                 if (!state.plan) throw new Error('请先生成大纲。');
@@ -249,16 +876,21 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         if (event) { ctx.eventSource.on(event, handler); listeners.push([event, handler]); }
     }
     listen('GENERATION_STARTED', async (type, _options, dryRun) => {
+        if (!dryRun) hostGenerating = true;
         if (dryRun || (!state.settings.autoOnSend && !resuming) || type === 'quiet' || type === 'impersonate') return;
         clearInjection(getContext()); preparationError = null;
         try {
+            const preparationId = workId;
             await anima.installAnimaObserver({ settings: settingsForAnima(true) });
+            if (preparationId !== workId) throw Object.assign(new Error('操作已取消。'), { code: 'CANCELLED' });
             generationToken = anima.beginAnimaGeneration();
             if (resuming) resuming.started = true;
         } catch (e) { preparationError = e; }
     });
     listen('GENERATION_ENDED', () => {
+        hostGenerating = false;
         if (writerActive) {
+            log('success', 'writer.request.completed', '酒馆主模型生成已结束，临时大纲已清理。');
             state.stage = 'complete'; status('正文生成已结束；本轮临时大纲已移除。');
             const last = getContext().chat.at(-1);
             if (last && !last.is_user && !last.is_system && String(last.mes || '').trim()) anima.invalidateAnimaRoundCache?.();
@@ -267,19 +899,26 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         if (!gate) state.busy = false;
         anima.clearAnimaGeneration(generationToken); render();
     });
-    listen('GENERATION_STOPPED', () => { writerActive = false; cancel('生成已停止；临时大纲已移除。'); });
-    listen('CHAT_CHANGED', () => { cancel('已切换聊天。'); state.input = draft(); restoreDraft(); render(); });
+    listen('GENERATION_STOPPED', () => { hostGenerating = false; writerActive = false; cancel('生成已停止；临时大纲已移除。'); });
+    listen('CHAT_CHANGED', () => { cancel('已切换聊天。'); state.input = draft(); state.extraWorldbooks = bookNames(extraWorldbooksByChat[getContext().chatId]); restoreDraft(); refreshHostCatalog(); render(); });
     const onWorldChange = () => {
         worldRevision++;
         if (!anima.isAnimaMemoryOperationInFlight?.()) anima.invalidateAnimaRoundCache?.();
+        render();
     };
     listen('WORLDINFO_UPDATED', onWorldChange);
     listen('WORLDINFO_SETTINGS_UPDATED', onWorldChange);
     clearInjection(ctx); restoreDraft();
     return {
         state, onAction, intercept,
-        open() { if (!state.busy && !state.plan) state.input = draft() || (getContext().chat.at(-1)?.is_user ? getContext().chat.at(-1).mes : ''); view.open(); render(); },
-        destroy() { cancel(); for (const [event, fn] of listeners) ctx.eventSource.removeListener(event, fn); view.destroy(); state.apiKey = ''; },
+        startUpdates() { updater.start(); },
+        async open() {
+            if (!state.busy && !state.plan) state.input = draft() || (getContext().chat?.at(-1)?.is_user ? getContext().chat.at(-1).mes : '');
+            view.open(); render();
+            if (!state.busy && !state.apiBusy && !state.animaChecking) await detectAnima();
+            if (!state.busy && !state.apiBusy && !state.animaChecking && typeof getContext().getWorldInfoNames === 'function') refreshHostCatalog();
+        },
+        destroy() { destroyed = true; updater.destroy(); cancel(); for (const [event, fn] of listeners) ctx.eventSource.removeListener(event, fn); view.destroy(); state.apiKey = ''; secretCache.clear(); },
     };
 }
 
@@ -297,29 +936,45 @@ async function copyText(text) {
 }
 
 let booted;
+function menuIcon() {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('fill', 'none'); svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '1.7');
+    svg.setAttribute('stroke-linecap', 'round'); svg.setAttribute('stroke-linejoin', 'round');
+    svg.style.cssText = 'width:1.15em;height:1.15em;flex:0 0 1.15em;vertical-align:middle;margin-inline-end:0.4em';
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', 'M12 3l2.1 6.9L21 12l-6.9 2.1L12 21l-2.1-6.9L3 12l6.9-2.1L12 3z M18.5 3v4 M16.5 5h4');
+    svg.append(path); return svg;
+}
 export async function boot() {
     if (booted) return booted;
     booted = (async () => {
-        const extensions = globalThis.SillyTavern?.getContext ? null : await import('/scripts/extensions.js');
+        const extensions = await import('/scripts/extensions.js');
         const source = () => globalThis.SillyTavern?.getContext?.() || extensions.getContext();
-        const [worldInfoModule, scriptModule, presetResponse, writerResponse] = await Promise.all([
+        const [worldInfoModule, scriptModule, presetResponse, writerResponse, manifestResponse] = await Promise.all([
             import('/scripts/world-info.js'), import('/script.js'), fetch(new URL('presets/default.json', base)), fetch(new URL('presets/writer.txt', base)),
+            fetch(new URL('manifest.json', base)),
         ]);
         if (!presetResponse.ok || !writerResponse.ok) throw new Error('内置预设文件加载失败，请重新安装完整扩展目录。');
         const getContext = () => {
             const c = source();
             return { ...c, getWorldInfoPrompt: c.getWorldInfoPrompt || worldInfoModule.getWorldInfoPrompt,
-                getCharacterCardFields: c.getCharacterCardFields || scriptModule.getCharacterCardFields };
+                getCharacterCardFields: c.getCharacterCardFields || scriptModule.getCharacterCardFields,
+                getRequestHeaders: c.getRequestHeaders || scriptModule.getRequestHeaders,
+                saveSettings: () => saveSettingsBeforeReload(scriptModule), isGenerating: scriptModule.isGenerating || (() => scriptModule.is_send_press === true),
+                extensionNames: extensions.extensionNames, getExtensionManifest: extensions.getExtensionManifest, worldInfoModule };
         };
-        const plugin = await createPlugin({ getContext, builtin: await presetResponse.json(), writerRules: await writerResponse.text() });
+        const manifest = manifestResponse.ok ? await manifestResponse.json() : {};
+        const plugin = await createPlugin({ getContext, builtin: await presetResponse.json(), writerRules: await writerResponse.text(), currentVersion: manifest.version || '未知' });
         globalThis.PlotWorkshop_Interceptor = plugin.intercept;
         const button = document.createElement('button'); button.type = 'button'; button.className = 'menu_button';
-        button.textContent = '剧情工坊 · 打开大纲面板'; button.style.minHeight = '44px';
+        button.append(menuIcon(), document.createTextNode('Vespera')); button.style.minHeight = '44px';
         button.addEventListener('click', () => plugin.open());
         const container = document.querySelector('#extensions_settings2') || document.querySelector('#extensions_settings');
         if (container) container.append(button);
         const actionMenu = document.querySelector('#extensionsMenu');
-        if (actionMenu) { const quick = document.createElement('div'); quick.className = 'list-group-item flex-container flexGap5'; quick.setAttribute('role','button'); quick.tabIndex = 0; quick.textContent = '剧情工坊'; quick.addEventListener('click', () => plugin.open()); quick.addEventListener('keydown', e => { if(e.key === 'Enter') plugin.open(); }); actionMenu.append(quick); }
+        if (actionMenu) { const quick = document.createElement('div'); quick.className = 'list-group-item flex-container flexGap5'; quick.setAttribute('role','button'); quick.tabIndex = 0; quick.append(menuIcon(), document.createTextNode('Vespera')); quick.addEventListener('click', () => plugin.open()); quick.addEventListener('keydown', e => { if(e.key === 'Enter' || e.key === ' ') { e.preventDefault(); plugin.open(); } }); actionMenu.append(quick); }
+        plugin.startUpdates();
         return plugin;
     })();
     return booted;
@@ -329,7 +984,7 @@ export async function boot() {
 if (globalThis.SillyTavern?.getContext) {
     globalThis.PlotWorkshop_Interceptor = async (...args) => {
         try { return await (await boot()).intercept(...args); }
-        catch { args[2]?.(true); globalThis.toastr?.error('剧情工坊未能加载，已停止本次生成。请检查扩展文件是否完整。'); }
+        catch { args[2]?.(true); globalThis.toastr?.error('Vespera未能加载，已停止本次生成。请检查扩展文件是否完整。'); }
     };
-    boot().catch(() => globalThis.toastr?.error('剧情工坊加载失败，请确认完整安装并查看浏览器控制台中的模块加载错误。'));
+    boot().catch(() => globalThis.toastr?.error('Vespera加载失败，请确认完整安装并查看浏览器控制台中的模块加载错误。'));
 }

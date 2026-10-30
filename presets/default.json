@@ -21,6 +21,110 @@
       "injection_order": 100,
       "injection_trigger": [],
       "forbid_overrides": true,
+      "identifier": "worldInfoBefore",
+      "name": "上下文｜世界书（前）",
+      "enabled": true,
+      "system_prompt": true,
+      "marker": true
+    },
+    {
+      "role": "system",
+      "injection_position": 0,
+      "injection_depth": 4,
+      "injection_order": 100,
+      "injection_trigger": [],
+      "forbid_overrides": true,
+      "identifier": "personaDescription",
+      "name": "上下文｜用户人格",
+      "enabled": true,
+      "system_prompt": true,
+      "marker": true
+    },
+    {
+      "role": "system",
+      "injection_position": 0,
+      "injection_depth": 4,
+      "injection_order": 100,
+      "injection_trigger": [],
+      "forbid_overrides": true,
+      "identifier": "charDescription",
+      "name": "上下文｜角色描述",
+      "enabled": true,
+      "system_prompt": true,
+      "marker": true
+    },
+    {
+      "role": "system",
+      "injection_position": 0,
+      "injection_depth": 4,
+      "injection_order": 100,
+      "injection_trigger": [],
+      "forbid_overrides": true,
+      "identifier": "charPersonality",
+      "name": "上下文｜角色性格",
+      "enabled": true,
+      "system_prompt": true,
+      "marker": true
+    },
+    {
+      "role": "system",
+      "injection_position": 0,
+      "injection_depth": 4,
+      "injection_order": 100,
+      "injection_trigger": [],
+      "forbid_overrides": true,
+      "identifier": "scenario",
+      "name": "上下文｜场景设定",
+      "enabled": true,
+      "system_prompt": true,
+      "marker": true
+    },
+    {
+      "role": "system",
+      "injection_position": 0,
+      "injection_depth": 4,
+      "injection_order": 100,
+      "injection_trigger": [],
+      "forbid_overrides": true,
+      "identifier": "worldInfoAfter",
+      "name": "上下文｜世界书（后）",
+      "enabled": true,
+      "system_prompt": true,
+      "marker": true
+    },
+    {
+      "role": "system",
+      "injection_position": 0,
+      "injection_depth": 4,
+      "injection_order": 100,
+      "injection_trigger": [],
+      "forbid_overrides": true,
+      "identifier": "dialogueExamples",
+      "name": "上下文｜对白示例",
+      "enabled": true,
+      "system_prompt": true,
+      "marker": true
+    },
+    {
+      "role": "system",
+      "injection_position": 0,
+      "injection_depth": 4,
+      "injection_order": 100,
+      "injection_trigger": [],
+      "forbid_overrides": true,
+      "identifier": "chatHistory",
+      "name": "上下文｜聊天历史",
+      "enabled": true,
+      "system_prompt": true,
+      "marker": true
+    },
+    {
+      "role": "system",
+      "injection_position": 0,
+      "injection_depth": 4,
+      "injection_order": 100,
+      "injection_trigger": [],
+      "forbid_overrides": true,
       "identifier": "main",
       "name": "规划｜任务分工与本轮范围",
       "content": "你负责下一条故事回复的内容设计，另一模型负责把你交付的内容扩写成中文正文。\n读取角色资料、世界设定、已发生的剧情、当前用户输入与本轮实际提供的 Anima 记忆，完成本轮的人物理解、情感发展、剧情选择、行动和对白话意设计。最终交付具体、完整、可执行的剧情大纲，不交付一份要求正文模型重新做创作决定的分析提纲。\n本轮是紧接当前用户输入、即将生成的一条回复。它可以包含多个连续的动作、对答和变化，但不能假定下一条真实用户消息已经出现。对用户角色的补写权限由“轻度抢话”条目单独规定。\n规划模型决定内容；正文模型决定最终措辞。规划结果要足以说明人物实际做什么、说出什么信息、内心发生什么，以及本轮停在哪里。\n最终只输出一份符合末尾协议的 content，不另生成文学正文、逐段正文草稿、状态栏、摘要或评分表。分析规则用于形成创作结果，不需要逐项输出分析过程。",
@@ -329,110 +433,6 @@
       "injection_order": 100,
       "injection_trigger": [],
       "forbid_overrides": true,
-      "identifier": "worldInfoBefore",
-      "name": "上下文｜世界书（前）",
-      "enabled": true,
-      "system_prompt": true,
-      "marker": true
-    },
-    {
-      "role": "system",
-      "injection_position": 0,
-      "injection_depth": 4,
-      "injection_order": 100,
-      "injection_trigger": [],
-      "forbid_overrides": true,
-      "identifier": "personaDescription",
-      "name": "上下文｜用户人格",
-      "enabled": true,
-      "system_prompt": true,
-      "marker": true
-    },
-    {
-      "role": "system",
-      "injection_position": 0,
-      "injection_depth": 4,
-      "injection_order": 100,
-      "injection_trigger": [],
-      "forbid_overrides": true,
-      "identifier": "charDescription",
-      "name": "上下文｜角色描述",
-      "enabled": true,
-      "system_prompt": true,
-      "marker": true
-    },
-    {
-      "role": "system",
-      "injection_position": 0,
-      "injection_depth": 4,
-      "injection_order": 100,
-      "injection_trigger": [],
-      "forbid_overrides": true,
-      "identifier": "charPersonality",
-      "name": "上下文｜角色性格",
-      "enabled": true,
-      "system_prompt": true,
-      "marker": true
-    },
-    {
-      "role": "system",
-      "injection_position": 0,
-      "injection_depth": 4,
-      "injection_order": 100,
-      "injection_trigger": [],
-      "forbid_overrides": true,
-      "identifier": "scenario",
-      "name": "上下文｜场景设定",
-      "enabled": true,
-      "system_prompt": true,
-      "marker": true
-    },
-    {
-      "role": "system",
-      "injection_position": 0,
-      "injection_depth": 4,
-      "injection_order": 100,
-      "injection_trigger": [],
-      "forbid_overrides": true,
-      "identifier": "worldInfoAfter",
-      "name": "上下文｜世界书（后）",
-      "enabled": true,
-      "system_prompt": true,
-      "marker": true
-    },
-    {
-      "role": "system",
-      "injection_position": 0,
-      "injection_depth": 4,
-      "injection_order": 100,
-      "injection_trigger": [],
-      "forbid_overrides": true,
-      "identifier": "dialogueExamples",
-      "name": "上下文｜对白示例",
-      "enabled": true,
-      "system_prompt": true,
-      "marker": true
-    },
-    {
-      "role": "system",
-      "injection_position": 0,
-      "injection_depth": 4,
-      "injection_order": 100,
-      "injection_trigger": [],
-      "forbid_overrides": true,
-      "identifier": "chatHistory",
-      "name": "上下文｜聊天历史",
-      "enabled": true,
-      "system_prompt": true,
-      "marker": true
-    },
-    {
-      "role": "system",
-      "injection_position": 0,
-      "injection_depth": 4,
-      "injection_order": 100,
-      "injection_trigger": [],
-      "forbid_overrides": true,
       "identifier": "nsfw",
       "name": "未使用｜辅助提示",
       "content": "",
@@ -473,6 +473,38 @@
     {
       "character_id": 100001,
       "order": [
+        {
+          "identifier": "worldInfoBefore",
+          "enabled": true
+        },
+        {
+          "identifier": "personaDescription",
+          "enabled": true
+        },
+        {
+          "identifier": "charDescription",
+          "enabled": true
+        },
+        {
+          "identifier": "charPersonality",
+          "enabled": true
+        },
+        {
+          "identifier": "scenario",
+          "enabled": true
+        },
+        {
+          "identifier": "worldInfoAfter",
+          "enabled": true
+        },
+        {
+          "identifier": "dialogueExamples",
+          "enabled": true
+        },
+        {
+          "identifier": "chatHistory",
+          "enabled": true
+        },
         {
           "identifier": "main",
           "enabled": true
@@ -558,38 +590,6 @@
           "enabled": false
         },
         {
-          "identifier": "worldInfoBefore",
-          "enabled": true
-        },
-        {
-          "identifier": "personaDescription",
-          "enabled": true
-        },
-        {
-          "identifier": "charDescription",
-          "enabled": true
-        },
-        {
-          "identifier": "charPersonality",
-          "enabled": true
-        },
-        {
-          "identifier": "scenario",
-          "enabled": true
-        },
-        {
-          "identifier": "worldInfoAfter",
-          "enabled": true
-        },
-        {
-          "identifier": "dialogueExamples",
-          "enabled": true
-        },
-        {
-          "identifier": "chatHistory",
-          "enabled": true
-        },
-        {
           "identifier": "outline_output",
           "enabled": true
         },
@@ -665,50 +665,50 @@
         "version": 1,
         "groups": [
           {
-            "id": "outline_task",
-            "name": "01 任务与输入",
+            "id": "outline_context",
+            "name": "01 上下文资料",
             "order": 0,
             "collapsed": false,
             "enabled": true
           },
           {
-            "id": "outline_voice",
-            "name": "02 第三人称与用户参与",
+            "id": "outline_task",
+            "name": "02 任务与输入规则",
             "order": 1,
             "collapsed": false,
             "enabled": true
           },
           {
-            "id": "outline_character",
-            "name": "03 读卡与人物",
+            "id": "outline_voice",
+            "name": "03 视角与用户参与",
             "order": 2,
             "collapsed": false,
             "enabled": true
           },
           {
-            "id": "outline_emotion",
-            "name": "04 情感与关系",
+            "id": "outline_character",
+            "name": "04 读卡与人物",
             "order": 3,
             "collapsed": false,
             "enabled": true
           },
           {
-            "id": "outline_story",
-            "name": "05 剧情与回应",
+            "id": "outline_emotion",
+            "name": "05 情感与关系",
             "order": 4,
             "collapsed": false,
             "enabled": true
           },
           {
-            "id": "outline_delivery",
-            "name": "06 篇幅配置与输出",
+            "id": "outline_story",
+            "name": "06 剧情与回应",
             "order": 5,
             "collapsed": false,
             "enabled": true
           },
           {
-            "id": "outline_context",
-            "name": "07 酒馆上下文占位",
+            "id": "outline_delivery",
+            "name": "07 篇幅配置与输出",
             "order": 6,
             "collapsed": false,
             "enabled": true
@@ -817,5 +817,6 @@
         }
       }
     }
-  }
+  },
+  "name": "第三人称 · 轻度抢话"
 }
