@@ -24,7 +24,7 @@ test('compiled trace exactly follows actual macro-expanded messages, including e
     assert.equal(compiled.entries[0].status, 'empty');
     assert.equal(compiled.entries[2].status, 'empty');
     assert.deepEqual(compiled.messages.slice(0, 2), [{ role: 'user', content: '旧输入' }, { role: 'assistant', content: '旧正文' }]);
-    assert.match(compiled.messages[2].content, /^【本轮实际读取的 Anima 记忆】/);
+    assert.match(compiled.messages[2].content, /^【相关经历与资料】/);
     assert.match(compiled.messages[3].content, /^【本轮共享的最终正文目标】/);
     assert.equal(compiled.messages[4].content, '【本轮当前 user_input】\n递出信。');
     assert.equal(compiled.messages[5].content, '乙保持克制。');
@@ -61,7 +61,9 @@ test('token estimate handles Unicode and runtime messages; inconsistent or absen
     const inspection = buildPromptInspection({ preset, compiled });
     // 10 content bytes + 6 role bytes => ceil(16/3) + 4 estimated format tokens.
     assert.equal(inspection.entries[0].tokens, 10);
-    assert.ok(inspection.entries.filter(entry => entry.kind === 'runtime').every(entry => entry.tokens > 0));
+    assert.equal(inspection.entries.find(entry => entry.id === 'anima_memory').tokens, 0);
+    assert.equal(inspection.entries.find(entry => entry.id === 'anima_memory').status, 'empty');
+    assert.ok(inspection.entries.find(entry => entry.id === 'current_input').tokens > 0);
     assert.ok(!inspection.entries.some(entry => entry.id === 'target_length'));
     assert.throws(() => buildPromptInspection({ preset, compiled: { messages: [] } }), /快照/);
     assert.throws(() => buildPromptInspection({ preset, compiled: { ...compiled, messages: [] } }), /不一致/);
@@ -72,7 +74,7 @@ test('only built-in ordering is context-first with final output last and no vari
     const preset = normalizePreset(source);
     assert.equal(source.name, '第三人称 · 轻度抢话');
     assert.ok(preset.prompts.every(item => !/\{\{\s*(?:set|get)(?:global)?var/i.test(item.content)));
-    const groups = ['outline_context','outline_task','outline_voice','outline_character','outline_emotion','outline_story','outline_delivery'];
+    const groups = ['outline_context','outline_task','outline_character','outline_emotion','outline_story','outline_voice','outline_delivery'];
     assert.deepEqual(preset.groups.map(group => group.id), groups);
     const ranks = preset.order.map(entry => groups.indexOf(preset.promptGroups[entry.identifier]));
     assert.deepEqual(ranks, [...ranks].sort((a,b) => a - b));

@@ -14,7 +14,7 @@ async function until(predicate, label) {
 }
 
 async function fixture(t, { settings = {}, saved, fetchMode = 'success', api, detectAnima, observerGate, recallAnima, host = {}, updaterFactory,
-    viewState = { open: false, unsaved: false }, reloadPage } = {}) {
+    viewState = { open: false, unsaved: false }, reloadPage, rewriteMode = 'success' } = {}) {
     const prior = { document: globalThis.document, sessionStorage: globalThis.sessionStorage, localStorage: globalThis.localStorage, SillyTavern: globalThis.SillyTavern };
     const input = { value: '她递出信。', dispatchEvent() {} };
     const storage = new Map();
@@ -39,7 +39,7 @@ async function fixture(t, { settings = {}, saved, fetchMode = 'success', api, de
         removeListener(name, fn) { handlers.set(name, (handlers.get(name) || []).filter(f => f !== fn)); },
         async emit(name, ...args) { for (const handler of handlers.get(name) || []) await handler(...args); },
     };
-    const calls = { planner: [], writer: [], saves: 0, recalled: 0, invalidated: 0, aborted: 0, detection: [], observers: [], recalls: [], reloads: 0 };
+    const calls = { planner: [], writer: [], replays: [], saves: 0, recalled: 0, invalidated: 0, aborted: 0, detection: [], observers: [], recalls: [], reloads: 0 };
     const ctx = {
         chatId: 'chat-a', characterId: 0, groupId: null, name1: '苏青', name2: '林澄', onlineStatus: 'connected',
         characters: [{ name: '林澄', description: '谨慎而重视约定', data: { description: '谨慎而重视约定', personality: '', scenario: '门口', mes_example: '' } }],
@@ -71,6 +71,26 @@ async function fixture(t, { settings = {}, saved, fetchMode = 'success', api, de
     const view = { render() {}, open() { viewState.open = true; }, close() { viewState.open = false; }, destroy() {},
         isOpen: () => viewState.open, hasUnsavedChanges: () => viewState.unsaved };
     const makePlugin = () => createPlugin({ getContext: () => ctx, builtin, writerRules: '按当前大纲扩写中文正文。', anima, viewFactory: () => view, fetchImpl,
+        async rewriteReply({ message, targetId, nextSwipe }) {
+            assert.equal(targetId, ctx.chat.length - 1);
+            message.swipes ??= [message.mes];
+            const prior = message.swipe_id ?? 0;
+            message.swipe_id = nextSwipe;
+            await events.emit('GENERATION_STARTED', 'swipe', {}, false);
+            let aborted = false;
+            await plugin.intercept(ctx.chat.slice(0, -1), 32000, () => { aborted = true; }, 'swipe');
+            const injected = ctx.extensionPrompts[INJECTION_KEY]?.value;
+            calls.replays.push({ injected, model: ctx.chatCompletionSettings.openai_model });
+            if (rewriteMode === 'repeat') {
+                await events.emit('GENERATION_STARTED', 'swipe', {}, false);
+                await plugin.intercept(ctx.chat.slice(0, -1), 32000, () => { aborted = true; }, 'swipe');
+            }
+            if (!aborted && rewriteMode === 'success') {
+                message.mes = '他把信接到手中，指尖停在封口。';
+                message.swipes[nextSwipe] = message.mes;
+            } else message.swipe_id = prior;
+            await events.emit('GENERATION_ENDED');
+        },
         extensionUrl: 'https://tavern.example/scripts/extensions/third-party/renamed-huapi/', currentVersion: '0.2.0',
         reloadPage() { calls.reloads++; reloadPage?.(); }, ...(api ? { api } : {}), ...(updaterFactory ? { updaterFactory } : {}) });
     let plugin = await makePlugin();
@@ -189,6 +209,61 @@ test('manual planning then confirmation writes only final prose and clears this-
     assert.equal(calls.invalidated, 1);
 });
 
+test('writer reroll uses the frozen outline and memory, preserves prose candidates and input draft', async t => {
+    const f = await fixture(t);
+    assert.equal(f.plugin.canRewrite(), false);
+    await f.plugin.onAction('generate', { input: f.input.value });
+    await f.plugin.onAction('confirmAndWrite');
+    assert.equal(f.plugin.canRewrite(), true);
+    const originalReply = f.ctx.chat.at(-1).mes, originalPrompt = f.calls.writer[0].prompt;
+    const recalls = f.calls.recalled;
+    f.input.value = '尚未发送的下一轮草稿';
+    await f.plugin.onAction('applyPlanEdit', { xml: xml.replace('接信。', '另一个计划。') });
+    f.ctx.chatCompletionSettings.openai_model = 'writer-second';
+    assert.equal(await f.plugin.onAction('rerollWriter'), true);
+    assert.equal(f.calls.planner.length, 1);
+    assert.equal(f.calls.recalled, recalls);
+    assert.equal(f.calls.replays[0].injected, originalPrompt);
+    assert.equal(f.calls.replays[0].model, 'writer-second');
+    assert.equal(f.ctx.chat.length, 3);
+    assert.equal(f.ctx.chat.at(-1).swipes[0], originalReply);
+    assert.equal(f.ctx.chat.at(-1).swipes.length, 2);
+    assert.equal(f.input.value, '尚未发送的下一轮草稿');
+    assert.equal(f.ctx.extensionPrompts[INJECTION_KEY], undefined);
+    assert.equal(f.plugin.canRewrite(), true);
+});
+
+test('writer reroll rejects changed history, stale pages and ungenerated outlines', async t => {
+    const f = await fixture(t);
+    assert.equal(await f.plugin.onAction('rerollWriter'), false);
+    await f.plugin.onAction('generate', { input: f.input.value });
+    assert.equal(await f.plugin.onAction('rerollWriter'), false);
+    await f.plugin.onAction('confirmAndWrite');
+    f.ctx.chat[0].mes = '已编辑前文';
+    assert.equal(f.plugin.canRewrite(), false);
+    assert.equal(await f.plugin.onAction('rerollWriter'), false);
+    assert.equal(f.calls.replays.length, 0);
+    await f.reload();
+    assert.equal(f.plugin.canRewrite(), false);
+});
+
+test('failed or repeated writer swipes preserve old candidate and always clear temporary injection', async t => {
+    for (const rewriteMode of ['failure', 'repeat']) {
+        await t.test(rewriteMode, async t => {
+            const f = await fixture(t, { rewriteMode });
+            await f.plugin.onAction('generate', { input: f.input.value });
+            await f.plugin.onAction('confirmAndWrite');
+            const old = f.ctx.chat.at(-1).mes;
+            assert.equal(await f.plugin.onAction('rerollWriter'), false);
+            assert.equal(f.ctx.chat.at(-1).mes, old);
+            assert.deepEqual(f.ctx.chat.at(-1).swipes, [old]);
+            assert.equal(f.ctx.extensionPrompts[INJECTION_KEY], undefined);
+            assert.equal(f.plugin.state.busy, false);
+            assert.equal(f.calls.planner.length, 1);
+        });
+    }
+});
+
 test('automatic review waits for approval; cancellation sends no writer request', async t => {
     const { ctx, plugin, calls } = await fixture(t, { settings: { autoOnSend: true, mode: 'review' } });
     const generating = ctx.generate('normal');
@@ -203,6 +278,39 @@ test('automatic review waits for approval; cancellation sends no writer request'
     assert.equal(ctx.chat.at(-1).is_user, true);
     assert.equal(ctx.extensionPrompts[INJECTION_KEY], undefined);
     assert.equal(plugin.state.busy, false);
+});
+
+test('outline reroll follows review, manual and auto modes and keeps version history', async t => {
+    for (const mode of ['review', 'manual', 'auto']) {
+        await t.test(mode, async t => {
+            const f = await fixture(t);
+            assert.equal(await f.plugin.onAction('rerollPlan', { input: f.input.value }), false);
+            await f.plugin.onAction('generate', { input: f.input.value });
+            const original = f.plugin.state.planVersions[0];
+            await f.plugin.onAction('settings', { mode });
+            await f.plugin.onAction('rerollPlan', { input: f.input.value });
+            assert.equal(f.calls.planner.length, 2);
+            assert.equal(f.calls.writer.length, mode === 'auto' ? 1 : 0);
+            assert.equal(f.ctx.chat.length, mode === 'auto' ? 3 : 1);
+            assert.equal(f.plugin.state.planVersions.length, 2);
+            assert.equal(f.plugin.state.planVersions[0].id, original.id);
+            assert.equal(f.plugin.state.planVersions[1].label, '重生成大纲');
+            assert.equal(f.plugin.state.stage, mode === 'auto' ? 'complete' : 'review');
+        });
+    }
+});
+
+test('failed reroll leaves previous outline and versions available without writing prose', async t => {
+    const f = await fixture(t);
+    await f.plugin.onAction('generate', { input: f.input.value });
+    const previous = f.plugin.state.plan.xml;
+    await f.plugin.onAction('settings', { baseUrl: 'invalid endpoint' });
+    assert.equal(await f.plugin.onAction('rerollPlan', { input: f.input.value }), false);
+    assert.equal(f.plugin.state.plan.xml, previous);
+    assert.equal(f.plugin.state.planVersions.length, 1);
+    assert.equal(f.plugin.state.stage, 'review');
+    assert.equal(f.calls.writer.length, 0);
+    assert.equal(f.plugin.state.busy, false);
 });
 
 test('automatic send performs one planner request then one main-model expansion', async t => {
@@ -1035,11 +1143,30 @@ test('cancelling an extra book read discards its late result and prevents writin
     assert.equal(f.calls.writer.length, 0); assert.equal(f.ctx.extensionPrompts[INJECTION_KEY], undefined);
 });
 
+test('appearance save is isolated from connection fields and survives reload', async t => {
+    const f = await fixture(t);
+    const profile = structuredClone(f.plugin.state.apiProfiles);
+    const before = f.plugin.state.settings.baseUrl;
+    assert.equal(await f.plugin.onAction('saveAppearance', { theme: 'dark', fontSize: '11.5', lineHeight: '2.15', baseUrl: 'https://unintended.example', model: 'unintended', apiKey: 'not-a-real-key' }), true);
+    assert.deepEqual(f.plugin.state.apiProfiles, profile);
+    assert.equal(f.plugin.state.settings.baseUrl, before);
+    assert.equal(f.calls.planner.length, 0);
+    await f.reload();
+    assert.equal(f.plugin.state.settings.fontSize, '11.5');
+    assert.equal(f.plugin.state.settings.lineHeight, '2.15');
+    assert.equal(f.plugin.state.settings.theme, 'dark');
+    const saved = structuredClone(f.plugin.state.settings);
+    for (const patch of [{ fontSize: '' }, { fontSize: '25' }, { fontSize: 'bad' }, { lineHeight: '0' }, { lineHeight: '' }, { theme: 'unknown' }]) {
+        assert.equal(await f.plugin.onAction('saveAppearance', { theme: 'dark', fontSize: '12', lineHeight: '1.75', ...patch }), false);
+        assert.deepEqual(f.plugin.state.settings, saved);
+    }
+});
+
 test('appearance changes keep a valid outline and its prompt inspection usable for confirmation', async t => {
     const f = await fixture(t);
     await f.plugin.onAction('generate', { input: f.input.value });
     const originalXml = f.plugin.state.plan.xml;
-    await f.plugin.onAction('settings', { theme: 'light', fontSize: '17', lineHeight: '1.9' });
+    await f.plugin.onAction('saveAppearance', { theme: 'light', fontSize: '17', lineHeight: '1.9' });
     assert.equal(f.plugin.state.settings.theme, 'light'); assert.equal(f.plugin.state.settings.fontSize, '17');
     assert.equal(f.plugin.state.settings.lineHeight, '1.9'); assert.equal(f.plugin.state.inspectionStale, false);
     assert.equal(f.plugin.state.plan.xml, originalXml);

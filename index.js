@@ -8,6 +8,7 @@ import { makeVersion, sanitizeBackup } from './lib/workshop-tools.js';
 import { buildPromptInspection } from './lib/prompt-inspector.js';
 import { getHostCatalog, readHostPreset, readExtraWorldbooks } from './lib/host-library.js';
 import { createRuntimeLog } from './lib/runtime-log.js';
+import { createWriterQuickActions } from './lib/quick-actions.js';
 import { createUpdater } from './lib/updater.js';
 import { saveSettingsBeforeReload } from './lib/settings-save.js';
 import { cleanSettings, proseTarget, assertChat, storySnapshot, collectPlanningContext, createSTTransport, injectForTurn, clearInjection, describeInjection, buildInjectionText } from './lib/host.js';
@@ -42,7 +43,7 @@ function writePlanningPreset(preset) {
 /** Exported for host-contract integration tests; normal installation uses boot(). */
 export async function createPlugin({ getContext, builtin, writerRules, anima = nativeAnima, viewFactory = createWorkbench, fetchImpl = fetch,
     api = { fetchModelList, testApiConnection, requestDiagnosis }, updaterFactory = createUpdater,
-    extensionUrl = base.href, currentVersion = '开发版', reloadPage = () => globalThis.location?.reload() } = {}) {
+    extensionUrl = base.href, currentVersion = '开发版', rewriteReply, reloadPage = () => globalThis.location?.reload() } = {}) {
     const ctx = getContext();
     const saved = ctx.extensionSettings[STORE] || {};
     const defaultPreset = normalizePreset(builtin, { name: '第三人称 · 轻度抢话' });
@@ -91,6 +92,9 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     let detectionWorkId = 0;
     let inspectionAnchor = null, diagnosisAnchor = null, currentVersionId = null;
     let hostGenerating = false, destroyed = false;
+    // Only the current page keeps this receipt; raw memory is never persisted in chat/settings.
+    let pendingWriterReceipt = null, writerReceipt = null, writerReplay = null;
+    let quickActions = null;
     const versionAnchors = new Map();
     const listeners = [];
     const view = viewFactory({ getState: () => state, onAction });
@@ -124,6 +128,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     const animaConfigSignature = () => JSON.stringify(getContext().extensionSettings.anima_memory_system ?? null);
     const settingsForAnima = inputAlreadyInChat => ({ frontendPath: state.animaDetectedPath || state.settings.animaPath, inputAlreadyInChat });
     function render() {
+        quickActions?.refresh();
         state.inspectionStale = !snapshotCurrent(inspectionAnchor);
         if (state.promptPreview) state.promptPreview.valid = !state.inspectionStale && !!anchor;
         const protocol = state.preset.prompts.find(item => item.identifier === 'outline_output');
@@ -369,7 +374,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     }
     function compileRound(planningContext, recalled, target, extraBooks = { text: '', books: [] }) {
         const compiled = compilePreset(state.preset, { context: { ...planningContext,
-            animaMemory: recalled.text, animaStatus: recalled.status === 'empty' ? 'empty' : 'success' }, targetLength: target });
+            animaMemory: recalled.text, memoryParts: recalled.memoryParts, animaStatus: recalled.status === 'empty' ? 'empty' : 'success' }, targetLength: target });
         for (const book of extraBooks.books) {
             const contents = extraBooks.entries.filter(entry => entry.book === book.name).map(entry => `${entry.comment ? `${entry.comment}\n` : ''}${entry.content}`).join('\n\n');
             const messages = contents ? [{ role: 'system', content: `【额外参考世界书：${book.name}；按启用条目提供，未做关键词触发】\n${contents}` }] : [];
@@ -444,6 +449,8 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         status('已导入备份副本；密钥需另填，旧大纲不能直接自动扩写。');
     }
     function cancel(message = '已取消；大纲没有写入聊天。') {
+        if (writerReplay) writerReplay.failed = true;
+        pendingWriterReceipt = null;
         log('info', 'operation.cancelled', '当前操作已取消，临时注入已清理。', { stage: state.stage });
         detectionWorkId++;
         if (state.animaChecking) state.animaStatus = '已取消 Anima 检测。';
@@ -471,17 +478,21 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     }
     function inject() {
         const fixedAnchor = anchor;
-        injectForTurn(getContext(), { xml: state.plan.xml, memory: memory?.text || '', target: proseTarget(state.settings), writerRules,
-            injection: { position: state.settings.injectionPosition, depth: state.settings.injectionDepth, role: state.settings.injectionRole },
+        const content = { xml: state.plan.xml, memory: memory?.text || '', target: proseTarget(state.settings), writerRules,
+            injection: { position: state.settings.injectionPosition, depth: state.settings.injectionDepth, role: state.settings.injectionRole } };
+        const current = getContext();
+        pendingWriterReceipt = { prefix: storySnapshot(current), targetId: current.chat.length,
+            chatId: current.chatId, content, animaConfig: animaConfigSignature() };
+        injectForTurn(current, { ...content,
             valid: () => !!writerActive && anchor === fixedAnchor && getContext().chatId === fixedAnchor.chatId });
         log('info', 'writer.injected', describeInjection(state.settings), { position: state.settings.injectionPosition, depth: Number(state.settings.injectionDepth), role: state.settings.injectionRole });
         writerActive = true;
     }
-    async function performPlan(userInput, { committed = false, token, maxContext, inspectOnly = false } = {}) {
+    async function performPlan(userInput, { committed = false, token, maxContext, inspectOnly = false, versionLabel = '生成大纲' } = {}) {
         if (!userInput.trim()) throw new Error('请先填写本轮输入。');
         if (!inspectOnly) {
             normalizeEndpoint(state.settings.baseUrl);
-            if (!state.settings.model.trim()) throw new Error('请先在设置中填写规划模型名称。');
+            if (!state.settings.model.trim()) throw new Error('请先在配置页填写规划模型名称。');
         }
         const target = proseTarget(state.settings);
         assertChat(getContext());
@@ -544,7 +555,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         log('success', 'planner.request.completed', '本轮大纲已生成并通过格式校验。');
         anchor = { story: initialStory, baseStory, config: initialConfig, draft: initialDraft,
             input: userInput, committed, chatId: getContext().chatId, worldRevision, animaConfig: planningAnimaConfig };
-        recordVersion('生成大纲'); refreshPromptPreview();
+        recordVersion(versionLabel); refreshPromptPreview();
         state.stage = 'review'; status('本轮大纲已生成，可以编辑、复制或确认扩写。');
         return result;
     }
@@ -580,12 +591,74 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         try { await current.generate('normal'); }
         finally {
             disposeReuse?.(); disposeReuse = null; resuming = null; writerActive = false;
+            pendingWriterReceipt = null;
             clearInjection(getContext()); state.busy = false; render();
+        }
+    }
+    function receiptCurrent(receipt = writerReceipt) {
+        if (!receipt || destroyed) return false;
+        try {
+            const current = getContext(), last = current.chat.at(-1);
+            return current.chatId === receipt.chatId && current.chat.length - 1 === receipt.targetId
+                && last === receipt.message && !last.is_user && !last.is_system
+                && receipt.animaConfig === animaConfigSignature()
+                && storySnapshot({ ...current, chat: current.chat.slice(0, receipt.targetId) }) === receipt.prefix;
+        } catch { return false; }
+    }
+    function canRewrite() {
+        return typeof rewriteReply === 'function' && !state.busy && !state.apiBusy && !state.animaChecking
+            && !state.libraryBusy && !hostGenerating && state.update.phase !== 'installing' && receiptCurrent();
+    }
+    async function rerollWriter() {
+        const current = getContext();
+        if (state.busy || state.apiBusy || state.animaChecking || state.libraryBusy || hostGenerating
+            || (typeof current.isGenerating === 'function' ? current.isGenerating() : current.isGenerating)) throw new Error('请先结束当前生成或操作，再重写正文。');
+        if (typeof rewriteReply !== 'function') throw new Error('当前酒馆未提供正文候选重写接口。');
+        if (!receiptCurrent()) throw new Error('只能重写本页由 Vespera 生成、且仍是最后一条的正文。聊天前文或人设改变后，请重新规划。');
+        if (current.onlineStatus === 'no_connection') throw new Error('请先连接酒馆主模型。');
+        if (view.hasUnsavedChanges?.()) throw new Error('请先保存或放弃工作台中尚未应用的修改。');
+        const receipt = writerReceipt;
+        const run = { receipt, started: false, intercepted: false, ended: false, failed: false,
+            nextSwipe: receipt.message.swipes?.length || 1 };
+        writerReplay = run; state.busy = true; state.stage = 'writing';
+        status('正在沿用这条回复的大纲重写正文…');
+        try {
+            await anima.installAnimaObserver({ settings: settingsForAnima(true) });
+            if (run.failed || writerReplay !== run || !receiptCurrent(receipt)) throw new Error('重写前聊天已变化，请重新规划。');
+            disposeReuse = anima.skipNextAnimaRecall({ type: 'swipe', matches: () => writerReplay === run
+                && run.started && !run.failed && receiptCurrent(receipt) });
+            await rewriteReply({ context: getContext(), message: receipt.message, targetId: receipt.targetId, nextSwipe: run.nextSwipe });
+            const fresh = receipt.message.swipes?.[run.nextSwipe];
+            if (run.failed || !run.intercepted || !run.ended || !receiptCurrent(receipt)
+                || receipt.message.swipe_id !== run.nextSwipe || typeof fresh !== 'string' || !fresh.trim() || fresh.trim() === '...') {
+                throw new Error('正文重写未完成。原正文候选仍保留；请检查主 API 连接与酒馆的滑动生成设置。');
+            }
+            state.stage = 'complete';
+            status('正文已重写，可用消息下方的左右箭头切换版本。');
+            log('success', 'writer.rerolled', '已沿用固定大纲生成正文候选，未重新规划。');
+            return true;
+        } finally {
+            disposeReuse?.(); disposeReuse = null;
+            if (writerReplay === run) writerReplay = null;
+            writerActive = false; clearInjection(getContext()); state.busy = false;
+            if (state.stage === 'writing') state.stage = 'complete';
+            render();
         }
     }
     async function intercept(chat, maxContext, abort, type) {
         if (state.update.phase === 'installing') { abort(true); status('Vespera正在更新，请完成后再生成。'); return; }
         if (preparationError?.code === 'CANCELLED') { preparationError = null; abort(true); clearInjection(getContext()); return; }
+        if (writerReplay) {
+            const run = writerReplay;
+            if (type !== 'swipe' || !run.started || run.intercepted || run.failed || !receiptCurrent(run.receipt)) {
+                run.failed = true; abort(true); clearInjection(getContext());
+                fail(new Error('正文重写上下文已变化，或酒馆尝试连续自动重写；已停止本次请求。')); return;
+            }
+            run.intercepted = true; writerActive = true;
+            injectForTurn(getContext(), { ...run.receipt.content, valid: () => writerReplay === run && !run.failed && receiptCurrent(run.receipt) });
+            log('info', 'writer.reroll.started', '重新注入此回复的固定大纲，只调用正文模型。');
+            return;
+        }
         if (resuming) {
             try { checkAnchor({ afterSubmission: true }); writerActive = true; inject(); }
             catch (e) { abort(true); fail(e); }
@@ -624,13 +697,14 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
                 reloadPage(); return;
             }
             if (state.update.phase === 'installing' && !['copyLogs', 'exportLogs', 'clearLogs'].includes(type)) throw new Error('扩展正在更新，请稍后再操作。');
+            if (type === 'rerollWriter') return await rerollWriter();
             const editable = ['settings', 'apiKey', 'importPreset', 'selectPreset', 'createPrompt', 'editPrompt', 'duplicatePrompt', 'movePrompt', 'deletePrompt', 'undoDeletePrompt', 'promptToggle', 'groupToggle', 'input',
                 'apiProfileSelect', 'apiProfileNew', 'apiProfileSave', 'apiProfileSaveAs', 'apiProfileDelete', 'saveSettings', 'fetchModels', 'testApi',
                 'presetSave', 'presetSaveAs', 'presetSelect', 'presetDelete', 'presetNew', 'detectAnima',
                 'inspectPrompts', 'diagnose', 'applyDiagnosis', 'restoreVersion', 'importBackup', 'exportBackup'];
-            editable.push('refreshHostCatalog', 'importHostPreset', 'extraWorldbooks');
+            editable.push('refreshHostCatalog', 'importHostPreset', 'extraWorldbooks', 'saveAppearance');
             if ((state.busy || state.apiBusy || state.animaChecking || state.libraryBusy) && editable.includes(type)) throw new Error('请先完成或取消当前操作，再修改输入或设置。');
-            if ((state.apiBusy || state.animaChecking) && ['generate', 'confirmAndWrite'].includes(type)) throw new Error('请先完成或取消 API 操作或 Anima 检测。');
+            if ((state.apiBusy || state.animaChecking || state.libraryBusy) && ['generate', 'rerollPlan', 'confirmAndWrite'].includes(type)) throw new Error('请先完成或取消 API 操作、目录读取或 Anima 检测。');
             if (type === 'input') { state.input = payload.value; render(); return; }
             if (type === 'refreshHostCatalog') return refreshHostCatalog();
             if (type === 'importHostPreset') {
@@ -670,6 +744,16 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
                 if (typeof payload.value !== 'string') throw new Error('API 密钥必须是文本。');
                 state.apiKey = payload.value; rememberSecret(payload.value);
                 secretCache.set(state.activeApiProfileId, { key: state.apiKey, remember: state.rememberApiKey }); return;
+            }
+            if (type === 'saveAppearance') {
+                const { theme, fontSize, lineHeight } = payload;
+                if (!['system', 'light', 'dark', 'host'].includes(theme)) throw new Error('请选择有效的配色。');
+                const size = Number(fontSize), height = Number(lineHeight);
+                if (!String(fontSize ?? '').trim() || !Number.isFinite(size) || size < 10 || size > 24) throw new Error('字号请输入 10–24 px。');
+                if (!String(lineHeight ?? '').trim() || !Number.isFinite(height) || height < 1.2 || height > 2.6) throw new Error('行距请输入 1.2–2.6。');
+                // A separate whitelist keeps appearance saves away from API/profile drafts.
+                state.settings = cleanSettings({ ...state.settings, theme, fontSize: size, lineHeight: height });
+                persist(); status('美化已保存。'); return true;
             }
             if (type === 'settings') {
                 const oldPath = state.settings.animaPath;
@@ -836,18 +920,27 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             }
             if (type === 'exportPreset') { download(JSON.stringify(writePlanningPreset(state.preset), null, 2), `${state.preset.name}.json`, 'application/json'); return; }
             if (type === 'cancel') { cancel(); return; }
-            if (type === 'generate') {
+            if (type === 'generate' || type === 'rerollPlan') {
                 if (state.busy) return;
+                const reroll = type === 'rerollPlan';
+                if (reroll && !state.plan) throw new Error('请先生成一份大纲。');
+                const startChat = getContext().chatId;
+                let planned = false;
                 state.busy = true; render();
                 try {
                     const preparationId = ++workId;
                     await anima.installAnimaObserver({ settings: settingsForAnima(false) });
                     if (preparationId !== workId) throw Object.assign(new Error('操作已取消。'), { code: 'CANCELLED' });
                     const committed = !draft() && getContext().chat.at(-1)?.is_user && getContext().chat.at(-1).mes === payload.input;
-                    await performPlan(String(payload.input ?? state.input), { committed });
+                    await performPlan(String(payload.input ?? state.input), { committed, versionLabel: reroll ? '重生成大纲' : '生成大纲' });
+                    planned = true;
                     state.busy = false; render();
                     if (state.settings.mode === 'auto') await confirmAndWrite();
-                } finally { if (!writerActive) { state.busy = false; render(); } }
+                } finally { if (!writerActive) {
+                    state.busy = false;
+                    if (reroll && !planned && state.plan && getContext().chatId === startChat) state.stage = 'review';
+                    render();
+                } }
                 return;
             }
             if (type === 'applyPlanEdit') {
@@ -877,6 +970,15 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     }
     listen('GENERATION_STARTED', async (type, _options, dryRun) => {
         if (!dryRun) hostGenerating = true;
+        if (!dryRun && writerReplay) {
+            if (type !== 'swipe' || writerReplay.started || !receiptCurrent(writerReplay.receipt)) {
+                writerReplay.failed = true;
+                disposeReuse?.();
+                disposeReuse = anima.skipNextAnimaRecall({ type: 'swipe', matches: () => false });
+            }
+            else { writerReplay.started = true; generationToken = anima.beginAnimaGeneration(); }
+            return;
+        }
         if (dryRun || (!state.settings.autoOnSend && !resuming) || type === 'quiet' || type === 'impersonate') return;
         clearInjection(getContext()); preparationError = null;
         try {
@@ -889,18 +991,28 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     });
     listen('GENERATION_ENDED', () => {
         hostGenerating = false;
+        if (writerReplay) writerReplay.ended = true;
         if (writerActive) {
+            if (pendingWriterReceipt && !writerReplay) {
+                const current = getContext(), pending = pendingWriterReceipt, last = current.chat.at(-1);
+                if (pending.chatId === current.chatId && pending.targetId === current.chat.length - 1
+                    && last && !last.is_user && !last.is_system && String(last.mes || '').trim()
+                    && pending.prefix === storySnapshot({ ...current, chat: current.chat.slice(0, pending.targetId) })) {
+                    writerReceipt = { ...pending, message: last };
+                }
+            }
             log('success', 'writer.request.completed', '酒馆主模型生成已结束，临时大纲已清理。');
             state.stage = 'complete'; status('正文生成已结束；本轮临时大纲已移除。');
             const last = getContext().chat.at(-1);
             if (last && !last.is_user && !last.is_system && String(last.mes || '').trim()) anima.invalidateAnimaRoundCache?.();
         }
-        writerActive = false; clearInjection(getContext());
+        pendingWriterReceipt = null; writerActive = false; clearInjection(getContext());
         if (!gate) state.busy = false;
         anima.clearAnimaGeneration(generationToken); render();
     });
     listen('GENERATION_STOPPED', () => { hostGenerating = false; writerActive = false; cancel('生成已停止；临时大纲已移除。'); });
-    listen('CHAT_CHANGED', () => { cancel('已切换聊天。'); state.input = draft(); state.extraWorldbooks = bookNames(extraWorldbooksByChat[getContext().chatId]); restoreDraft(); refreshHostCatalog(); render(); });
+    listen('CHAT_CHANGED', () => { cancel('已切换聊天。'); writerReceipt = null; state.input = draft(); state.extraWorldbooks = bookNames(extraWorldbooksByChat[getContext().chatId]); restoreDraft(); refreshHostCatalog(); render(); });
+    for (const event of ['MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_RECEIVED']) listen(event, () => quickActions?.refresh());
     const onWorldChange = () => {
         worldRevision++;
         if (!anima.isAnimaMemoryOperationInFlight?.()) anima.invalidateAnimaRoundCache?.();
@@ -910,7 +1022,8 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     listen('WORLDINFO_SETTINGS_UPDATED', onWorldChange);
     clearInjection(ctx); restoreDraft();
     return {
-        state, onAction, intercept,
+        state, onAction, intercept, canRewrite,
+        attachQuickActions() { quickActions?.destroy(); quickActions = createWriterQuickActions({ getContext, onRewrite: () => onAction('rerollWriter'), canRewrite }); quickActions.refresh(); },
         startUpdates() { updater.start(); },
         async open() {
             if (!state.busy && !state.plan) state.input = draft() || (getContext().chat?.at(-1)?.is_user ? getContext().chat.at(-1).mes : '');
@@ -918,7 +1031,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             if (!state.busy && !state.apiBusy && !state.animaChecking) await detectAnima();
             if (!state.busy && !state.apiBusy && !state.animaChecking && typeof getContext().getWorldInfoNames === 'function') refreshHostCatalog();
         },
-        destroy() { destroyed = true; updater.destroy(); cancel(); for (const [event, fn] of listeners) ctx.eventSource.removeListener(event, fn); view.destroy(); state.apiKey = ''; secretCache.clear(); },
+        destroy() { destroyed = true; quickActions?.destroy(); writerReceipt = null; updater.destroy(); cancel(); for (const [event, fn] of listeners) ctx.eventSource.removeListener(event, fn); view.destroy(); state.apiKey = ''; secretCache.clear(); },
     };
 }
 
@@ -965,7 +1078,14 @@ export async function boot() {
                 extensionNames: extensions.extensionNames, getExtensionManifest: extensions.getExtensionManifest, worldInfoModule };
         };
         const manifest = manifestResponse.ok ? await manifestResponse.json() : {};
-        const plugin = await createPlugin({ getContext, builtin: await presetResponse.json(), writerRules: await writerResponse.text(), currentVersion: manifest.version || '未知' });
+        const plugin = await createPlugin({ getContext, builtin: await presetResponse.json(), writerRules: await writerResponse.text(), currentVersion: manifest.version || '未知',
+            async rewriteReply({ context, message, targetId, nextSwipe }) {
+                if (typeof context.swipe?.to !== 'function') throw new Error('当前酒馆缺少 swipe.to 接口，请升级酒馆后使用正文重写。');
+                if (context.swipe.isAllowed?.() === false) throw new Error('请启用酒馆的消息滑动生成，并结束当前生成或消息编辑。');
+                const { SWIPE_DIRECTION } = await import('/scripts/constants.js');
+                if (SWIPE_DIRECTION?.RIGHT === undefined) throw new Error('当前酒馆未提供滑动方向接口。');
+                await context.swipe.to(null, SWIPE_DIRECTION.RIGHT, { message, forceMesId: targetId, forceSwipeId: nextSwipe, forceDuration: 0 });
+            } });
         globalThis.PlotWorkshop_Interceptor = plugin.intercept;
         const button = document.createElement('button'); button.type = 'button'; button.className = 'menu_button';
         button.append(menuIcon(), document.createTextNode('Vespera')); button.style.minHeight = '44px';
@@ -974,6 +1094,7 @@ export async function boot() {
         if (container) container.append(button);
         const actionMenu = document.querySelector('#extensionsMenu');
         if (actionMenu) { const quick = document.createElement('div'); quick.className = 'list-group-item flex-container flexGap5'; quick.setAttribute('role','button'); quick.tabIndex = 0; quick.append(menuIcon(), document.createTextNode('Vespera')); quick.addEventListener('click', () => plugin.open()); quick.addEventListener('keydown', e => { if(e.key === 'Enter' || e.key === ' ') { e.preventDefault(); plugin.open(); } }); actionMenu.append(quick); }
+        plugin.attachQuickActions();
         plugin.startUpdates();
         return plugin;
     })();

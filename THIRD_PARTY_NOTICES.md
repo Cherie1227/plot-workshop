@@ -17,6 +17,8 @@
 
 通过官方扩展入口、上下文、事件和临时提示词接口集成。没有在仓库内打包酒馆宿主源码。
 
+固定大纲正文重写使用宿主的 `context.swipe.to` 接口保存消息候选；快捷命令通过 `SlashCommandParser` / `SlashCommand.fromProps` 注册。相关接口依运行时能力检查提供，未在扩展中替换酒馆生成实现。
+
 - [官方扩展文档](https://docs.sillytavern.app/for-contributors/writing-extensions/)
 - [SillyTavern 官方仓库](https://github.com/SillyTavern/SillyTavern)
 

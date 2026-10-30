@@ -84,8 +84,9 @@ test('each compilation requires actual Anima outcome and current input', () => {
     assert.throws(() => compilePreset(p, { context: { ...baseContext, currentInput: undefined } }), { code: 'CURRENT_INPUT_MISSING' });
     assert.throws(() => compilePreset(p, { context: { ...baseContext, animaStatus: 'success', animaMemory: '' } }), { code: 'ANIMA_REQUIRED' });
     const result = compilePreset(p, { context: { ...baseContext, animaStatus: 'empty', animaMemory: '' }, targetLength: '正文 1500—2000 字，不包含标题。' });
-    assert.ok(result.messages.some(m => m.content.includes('成功，未找到相关记忆')));
-    assert.ok(result.messages.some(m => m.content.includes('正文 1500—2000 字') && m.content.includes('不把它当作本次大纲')));
+    assert.deepEqual(result.entries.find(entry => entry.id === 'anima_memory').messages, []);
+    assert.ok(!result.messages.some(m => m.content.includes('未找到相关记忆')));
+    assert.ok(result.messages.some(m => m.content.includes('正文 1500—2000 字') && m.content.includes('主模型扩写正文')));
 });
 
 test('export round-trip retains editable order/groups while excluding script/provider data', () => {
@@ -185,6 +186,9 @@ test('bundled preset compiles without enabled placeholders and preserves final o
     const context = { ...baseContext, worldInfoBefore: '', personaDescription: '苏青寡言。', charDescription: '林澄重视约定。', charPersonality: '', scenario: '门口。', worldInfoAfter: '', dialogueExamples: '', chatHistory: [] };
     const result = compilePreset(p, { context, targetLength: '1500—2000 字' });
     assert.ok(!JSON.stringify(result.messages).includes('〔自行填写或删除〕'));
-    assert.ok(result.messages.at(-1).content.includes('固定模板开始'));
+    for (const tag of ['content', 'plot', 'characters', 'segments', 'end_state']) {
+        assert.ok(result.messages.at(-1).content.includes(`<${tag}>`));
+        assert.ok(result.messages.at(-1).content.includes(`</${tag}>`));
+    }
     assert.ok(result.messages.some(x => x.content.includes('本轮共享的最终正文目标')));
 });

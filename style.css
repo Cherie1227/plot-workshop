@@ -1,4 +1,4 @@
-/* Vespera · five independent pages. All styling stays inside the extension dialog. */
+/* Vespera · six independent pages. All styling stays inside the extension dialog. */
 .pw-workbench {
  --pw-bg:#161819;--pw-surface:#202224;--pw-card:#242729;--pw-inset:#191c1e;--pw-rail:#1b1e20;
  --pw-ink:#e8e3da;--pw-muted:#b0aba1;--pw-line:#58554d;--pw-line-fine:#3b3e3e;--pw-control-line:#777064;
@@ -51,7 +51,7 @@
 .pw-brand h1{font-size:25px;line-height:1.25;letter-spacing:5px;padding-left:5px;font-weight:500}
 .pw-workbench .pw-close{position:absolute;right:4px;top:3px;width:44px;min-width:44px;padding:0;border:0;background:transparent;box-shadow:none!important;z-index:2}
 .pw-close>span{display:none}.pw-close svg{width:20px;height:20px}
-.pw-page-nav{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));flex:0 0 auto;background:var(--pw-surface);border-bottom:1px solid var(--pw-line);padding:0 8px;box-shadow:0 2px 6px #0001;position:relative;z-index:2}
+.pw-page-nav{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));flex:0 0 auto;background:var(--pw-surface);border-bottom:1px solid var(--pw-line);padding:0 8px;box-shadow:0 2px 6px #0001;position:relative;z-index:2}
 .pw-workbench .pw-page-tab{min-height:48px;padding:5px 2px;border:0;border-radius:0;background:transparent;box-shadow:none!important;font-family:var(--pw-heading);font-size:14px;color:var(--pw-muted);position:relative}
 .pw-page-tab+.pw-page-tab::before{content:"";height:16px;width:1px;position:absolute;left:0;top:16px;background:var(--pw-line)}
 .pw-workbench .pw-page-tab.pw-selected{color:var(--pw-accent);background:transparent}
@@ -330,3 +330,82 @@
  @media(prefers-color-scheme:light){.pw-workbench[data-theme="system"]{--pw-bg:#f3f5f7;--pw-surface:#f8f9fa;--pw-card:#fbfcfd;--pw-inset:#eef1f4}}
  .pw-workbench[data-theme="host"]{--pw-bg:var(--SmartThemeBlurTintColor,#1a2026);--pw-surface:var(--SmartThemeChatTintColor,#252c32);--pw-card:var(--SmartThemeChatTintColor,#2b3238);--pw-inset:var(--SmartThemeBlurTintColor,#1c2228)}
 }
+
+/* Compact controls keep touch targets while giving the library more room. */
+.pw-workbench .pw-preset-select-row{display:flex;align-items:flex-end;gap:8px}
+.pw-workbench .pw-preset-select-row>.pw-field{flex:1;min-width:0}
+.pw-workbench .pw-preset-select-row>.pw-button{flex:0 0 auto;padding-inline:10px}
+.pw-workbench .pw-preset-save-status{margin-top:6px;min-height:1.5em}
+.pw-workbench .pw-appearance-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:18px}
+.pw-workbench .pw-appearance-actions>.pw-primary{flex:1}
+.pw-workbench .pw-appearance-status{margin-top:8px}
+.pw-workbench .pw-worldbook-toolbar{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:6px;align-items:center;margin:8px 0}
+.pw-workbench .pw-worldbook-toolbar>.pw-button{padding-inline:10px}
+.pw-workbench .pw-worldbook-toolbar>select{width:auto;max-width:100px;padding-inline:8px}
+.pw-workbench .pw-worldbook-result-count{margin:4px 0 6px;color:var(--pw-muted);font-size:var(--pw-meta-size)}
+.pw-workbench .pw-worldbook-pagination{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px}
+.pw-workbench .pw-worldbook-pagination>.pw-button{padding:6px 12px}
+.pw-workbench .pw-worldbook-pagination>span{color:var(--pw-muted);font-size:var(--pw-meta-size)}
+.pw-workbench .pw-book-section{padding:10px 12px;margin-top:12px}
+.pw-workbench .pw-book-section h3{margin-bottom:8px}
+.pw-workbench .pw-book-section>.pw-hint{margin-top:8px}
+.pw-workbench .pw-mounted-section>summary{min-height:44px;display:flex;align-items:center;cursor:pointer;font-size:14px;gap:8px;list-style:none}
+.pw-workbench .pw-mounted-section>summary::before{content:'›';font-size:18px;line-height:1;transition:transform .15s}
+.pw-workbench .pw-mounted-section[open]>summary::before{transform:rotate(90deg)}
+.pw-workbench .pw-mounted-section>summary::-webkit-details-marker{display:none}
+.pw-workbench .pw-mounted-section{padding-block:0}
+.pw-workbench .pw-mounted-section[open]{padding-bottom:8px}
+.pw-workbench :is(.pw-mounted-books,.pw-extra-books){gap:0}
+.pw-workbench :is(.pw-mounted-book,.pw-book-checkbox){min-height:44px;padding:6px 2px;gap:10px;border:0;border-bottom:1px solid var(--pw-line-fine);border-radius:0;background:transparent;box-shadow:none;line-height:1.6}
+.pw-workbench :is(.pw-mounted-book,.pw-book-checkbox):last-child{border-bottom:0}
+.pw-workbench .pw-book-checkbox:has(input:checked){color:var(--pw-accent);background:var(--pw-accent-soft)}
+.pw-workbench .pw-book-checkbox:hover{background:var(--pw-hover)}
+.pw-workbench :is(.pw-mounted-book,.pw-book-checkbox)>svg{width:16px;height:16px}
+.pw-workbench .pw-worldbook-name{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pw-workbench .pw-worldbook-label{flex:0 0 auto;font-size:var(--pw-meta-size);color:var(--pw-muted)}
+.pw-workbench .pw-worldbook-source{flex:0 0 auto;max-width:40%;font-size:var(--pw-meta-size);color:var(--pw-muted);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.pw-workbench .pw-mounted-book .pw-hint{flex:0 0 auto;font-size:var(--pw-meta-size)}
+.pw-workbench .pw-worldbook-toolbar .pw-input{padding-block:8px}
+@media(max-width:760px){
+ .pw-workbench .pw-header{height:56px;min-height:56px}
+ .pw-workbench .pw-brand{padding-top:11px}
+ .pw-workbench .pw-brand h1{font-size:20px}
+ .pw-workbench .pw-header-art{height:100px;bottom:-17px}
+ .pw-workbench .pw-page-nav{padding-inline:6px}
+ .pw-workbench .pw-page-nav .pw-page-tab{min-height:44px;padding:5px 1px}
+ .pw-workbench .pw-page-tab+.pw-page-tab::before{top:16px}
+ .pw-workbench .pw-body::before,.pw-workbench .pw-body::after{top:100px}
+ .pw-workbench .pw-main{padding:12px 12px 20px}
+ .pw-workbench :is(.pw-page-heading,.pw-section-heading){margin-bottom:12px;gap:8px}
+ .pw-workbench :is(.pw-page-heading h2,.pw-section-heading h2,.pw-settings-page-title){font-size:15px}
+ .pw-workbench .pw-settings-page-title{margin-bottom:12px!important}
+ .pw-workbench .pw-page-heading>svg,.pw-workbench .pw-section-heading>svg{width:18px;height:20px}
+ .pw-workbench .pw-preset-toolbar{margin:10px 0 14px;gap:6px}
+ .pw-workbench .pw-preset-drawer{padding:10px;margin-bottom:14px}
+ .pw-workbench .pw-groups{gap:12px}
+ .pw-workbench .pw-group-summary{min-height:48px}
+ .pw-workbench .pw-group-items{gap:6px;padding-bottom:8px}
+ .pw-workbench .pw-prompt-row{min-height:46px}
+ .pw-workbench .pw-prompt-name{min-height:44px}
+ .pw-workbench .pw-settings-section{margin-bottom:14px;padding-inline:12px}
+ .pw-workbench .pw-settings-section>summary{min-height:48px;padding:10px 0}
+ .pw-workbench .pw-settings-section>.pw-field+.pw-field{margin-top:14px}
+ .pw-workbench .pw-appearance-section{padding:12px}
+ .pw-workbench .pw-appearance-section h3{margin-bottom:12px}
+ .pw-workbench .pw-appearance-section>.pw-field+.pw-field{margin-top:16px}
+ .pw-workbench .pw-field{gap:6px}
+ .pw-workbench .pw-input{padding:8px 10px}
+ .pw-workbench .pw-worldbooks-heading{margin-bottom:4px}
+}
+/* Small signature wordmark; the content viewport keeps its compact height. */
+.pw-workbench .pw-brand{padding-top:10px}
+.pw-workbench .pw-brand h1{font-family:"Iowan Old Style",Baskerville,"Palatino Linotype",Georgia,serif;font-style:italic;font-size:25px;line-height:1.2;font-weight:400;letter-spacing:.8px;padding:0 8px;color:var(--pw-ink);position:relative}
+.pw-workbench .pw-brand h1::first-letter{font-size:1.17em}
+.pw-workbench .pw-brand h1::after{content:'✦';position:absolute;right:-7px;top:1px;font:10px/1 Georgia,serif;color:var(--pw-accent);opacity:.8}
+.pw-workbench .pw-plan-primary-actions>.pw-button{flex:1 1 0;min-width:0;white-space:normal}
+.vespera-rewrite-shortcut{display:inline-flex;align-items:center;justify-content:center;width:36px;min-width:36px;min-height:44px;padding:6px;border:0;background:transparent;color:var(--SmartThemeBodyColor,currentColor);cursor:pointer;flex-shrink:0}
+.vespera-rewrite-shortcut svg{width:19px;height:19px;pointer-events:none}
+.vespera-rewrite-shortcut:disabled{opacity:.35;cursor:default}
+.vespera-rewrite-shortcut:focus-visible{outline:2px solid currentColor;outline-offset:-3px;border-radius:6px}
+@media(min-width:761px){.pw-workbench .pw-brand{padding-top:16px}.pw-workbench .pw-brand h1{font-size:30px}}
+.vespera-rewrite-shortcut.vespera-rewrite-shortcut--menu{width:auto;justify-content:flex-start}

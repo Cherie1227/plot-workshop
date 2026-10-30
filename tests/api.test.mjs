@@ -61,7 +61,10 @@ test('diagnosis returns validated choices without adopting them', async () => {
     } });
     assert.deepEqual(actual, result);
     assert.equal(sent.messages[0].content, 'fixture context');
-    assert.match(sent.messages.at(-1).content, /不自动采用/);
+    const instruction = sent.messages.at(-1).content;
+    const contract = JSON.parse(instruction.slice(instruction.indexOf('{'), instruction.lastIndexOf('}') + 1));
+    assert.deepEqual(Object.keys(contract), ['summary', 'options']);
+    assert.deepEqual(Object.keys(contract.options[0]), ['title', 'direction']);
     for (const content of ['not JSON', '{"summary":"x","options":[{"title":"x"}]}']) {
         await assert.rejects(requestDiagnosis({ ...options, messages: sent.messages, fetchImpl: async () => ok({ choices: [{ message: { content } }] }) }), { code: 'DIAGNOSIS_INVALID' });
     }

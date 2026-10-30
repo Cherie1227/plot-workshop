@@ -107,6 +107,14 @@ export function createWorkbench({ getState, onAction }) {
     let pendingPresetChange = null;
     let dirtyPrompt = false;
     let dirtyPlan = false;
+    let appearanceDraft = null;
+    let appearanceDirty = false;
+    let savingAppearance = false;
+    let appearanceFeedback = '';
+    let worldbookPage = 1;
+    let promptListReturn = null;
+    const configDrafts = new Map();
+    let keyDraftDirty = false;
     let seenRawPlan;
     let presetSignature = '';
     let planSignature = '';
@@ -125,6 +133,10 @@ export function createWorkbench({ getState, onAction }) {
             statusMessage.textContent = '';
             statusMessage.classList.remove('pw-error');
             const result = await onAction(type, payload);
+            if (type === 'importBackup' && result !== false) {
+                configDrafts.clear(); keyDraftDirty = false;
+                appearanceDirty = false; appearanceDraft = null; appearanceFeedback = '';
+            }
             render();
             return result;
         } catch (error) {
@@ -139,6 +151,7 @@ export function createWorkbench({ getState, onAction }) {
         if (activeTab === tab) return;
         withUnsavedGuard(() => {
             resetEditor();
+            promptListReturn = null;
             activeTab = tab;
             renderTabs();
             body.scrollTop = 0;
@@ -153,7 +166,7 @@ export function createWorkbench({ getState, onAction }) {
     const pageNav = el('nav', 'pw-page-nav');
     pageNav.setAttribute('aria-label', '工作区');
     const pageTabButtons = new Map();
-    for (const [id, label] of [['outline', '大纲'], ['presets', '预设'], ['worldbooks', '世界书'], ['settings', '设置'], ['appearance', '美化']]) {
+    for (const [id, label] of [['outline', '大纲'], ['presets', '预设'], ['worldbooks', '世界书'], ['config', '配置'], ['settings', '设置'], ['appearance', '美化']]) {
         const node = button(label, () => tabTo(id), { className: 'pw-page-tab' });
         pageTabButtons.set(id, node); pageNav.append(node);
     }
@@ -162,8 +175,9 @@ export function createWorkbench({ getState, onAction }) {
     for (const [value, label] of [['light', '日间纸色'], ['dark', '夜间墨色'], ['host', '跟随酒馆'], ['system', '跟随系统']]) {
         const option = el('option', '', label); option.value = value; themeSelect.append(option);
     }
-    themeSelect.addEventListener('change', () => act('settings', { theme: themeSelect.value }));
+    themeSelect.addEventListener('change', updateAppearanceDraft);
     const closeButton = button('关闭', close, { className: 'pw-close', iconName: 'close' });
+    closeButton.setAttribute('aria-label', '关闭');
     const headerArt = el('img', 'pw-header-art'); headerArt.alt = ''; headerArt.src = new URL('./assets/celestial-header.png', import.meta.url).href;
     headerArt.setAttribute('aria-hidden', 'true');
     header.append(headerArt, brand, closeButton);
@@ -181,16 +195,16 @@ export function createWorkbench({ getState, onAction }) {
     const presetHead = el('div', 'pw-section-heading');
     presetHead.append(icon('leaf'), el('h2', '', '规划预设'));
     const presetSelect = el('select', 'pw-input');
-    presetSelect.setAttribute('aria-label', '规划预设');
+    presetSelect.setAttribute('aria-label', '当前规划预设');
     presetSelect.addEventListener('change', () => {
         const id = presetSelect.value;
         presetSelect.value = getState().activePresetId || 'current';
         guardPresetChange(async () => { resetEditor(); await act(id === 'builtin' ? 'selectPreset' : 'presetSelect', { id }); presetNameDirty = false; render(); });
     });
     const hostPresetDetails = el('details', 'pw-host-catalog pw-advanced');
-    hostPresetDetails.append(el('summary', '', '从酒馆导入'));
+    hostPresetDetails.append(el('summary', '', '从酒馆导入预设'));
     const hostPresetSelect = el('select', 'pw-input');
-    hostPresetSelect.setAttribute('aria-label', '酒馆预设目录');
+    hostPresetSelect.setAttribute('aria-label', '从酒馆导入预设');
     const hostPresetImport = button('导入为副本', () => guardPresetChange(async () => {
         if (!hostPresetSelect.value || isBlocked()) return;
         const result = await act('importHostPreset', { id: hostPresetSelect.value });
@@ -200,7 +214,7 @@ export function createWorkbench({ getState, onAction }) {
     const hostPresetActions = el('div', 'pw-management-actions');
     hostPresetActions.append(button('刷新酒馆目录', () => act('refreshHostCatalog')), hostPresetImport);
     const hostPresetStatus = el('p', 'pw-hint pw-library-status'); hostPresetStatus.setAttribute('role', 'status');
-    hostPresetDetails.append(field('酒馆主预设', hostPresetSelect), hostPresetActions, el('p', 'pw-hint', '导入为独立副本，不更改酒馆当前主预设。'), hostPresetStatus);
+    hostPresetDetails.append(field('从酒馆导入预设', hostPresetSelect), hostPresetActions, el('p', 'pw-hint', '导入为独立副本，不更改酒馆当前主预设。'), hostPresetStatus);
     const importInput = control('file');
     importInput.accept = '.json,application/json';
     importInput.hidden = true;
@@ -218,17 +232,27 @@ export function createWorkbench({ getState, onAction }) {
     const presetManage = el('details', 'pw-preset-manage pw-advanced');
     presetManage.append(el('summary', '', '管理规划预设'));
     const presetNameInput = control('text', '预设名称'); presetNameInput.setAttribute('aria-label', '规划预设名称');
-    presetNameInput.addEventListener('input', () => { presetNameDirty = presetNameInput.value !== (getState().preset?.name || ''); });
+    presetNameInput.addEventListener('input', () => { presetNameDirty = presetNameInput.value !== (getState().preset?.name || ''); renderPresetSaveStatus(); });
     const presetManageActions = el('div', 'pw-management-actions');
     const savePresetName = async type => {
+        if (isBlocked() || savingPrompt) return;
+        if (dirtyPrompt) {
+            activeTab = 'presets'; renderTabs();
+            statusMessage.textContent = '此条目有未保存的修改，请先保存条目，再保存预设。';
+            renderPresetSaveStatus(); promptSave.scrollIntoView({ block: 'nearest' }); promptSave.focus({ preventScroll: true });
+            return;
+        }
         const enteredName = presetNameInput.value.trim();
         const name = type === 'presetSaveAs' && enteredName === getState().preset?.name ? undefined : enteredName;
         const result = await act(type, { name });
         if (result !== false) { presetNameDirty = false; render(); }
     };
+    const presetSaveButton = button('保存预设', () => savePresetName('presetSave'), { className: 'pw-primary' });
+    const presetSelectRow = el('div', 'pw-preset-select-row');
+    presetSelectRow.append(field('当前规划预设', presetSelect), presetSaveButton);
+    const presetSaveStatus = el('p', 'pw-hint pw-preset-save-status'); presetSaveStatus.setAttribute('role', 'status');
     const presetDeleteButton = button('删除预设', () => { presetDeleteNotice.hidden = false; });
     presetManageActions.append(
-        button('保存预设', () => savePresetName('presetSave')),
         button('另存为', () => guardPresetChange(() => savePresetName('presetSaveAs'), { keepName: true })),
         button('新建预设', () => guardPresetChange(async () => { resetEditor(); const result = await act('presetNew', {}); if (result !== false) { presetNameDirty = false; render(); } })),
         presetDeleteButton,
@@ -272,10 +296,24 @@ export function createWorkbench({ getState, onAction }) {
     const worldbooksMounted = el('div', 'pw-mounted-books');
     const extraBooks = el('div', 'pw-extra-books');
     const worldbookStatus = el('p', 'pw-hint pw-library-status'); worldbookStatus.setAttribute('role', 'status');
-    const mountedSection = el('section', 'pw-book-section');
-    mountedSection.append(el('h3', '', '当前挂载'), worldbooksMounted, el('p', 'pw-hint', '沿用酒馆触发规则。'), frameOrnaments());
+    const mountedSection = el('details', 'pw-book-section pw-mounted-section');
+    const mountedSummary = el('summary', '', '当前挂载 · 0');
+    mountedSection.append(mountedSummary, worldbooksMounted);
     const extraSection = el('section', 'pw-book-section');
-    extraSection.append(el('h3', '', '额外加入规划'), extraBooks, el('p', 'pw-hint', '按启用条目读取，不改变原挂载。'), frameOrnaments());
+    const worldbookSearch = control('search', '搜索世界书'); worldbookSearch.setAttribute('aria-label', '搜索世界书');
+    const worldbookFilter = el('select', 'pw-input'); worldbookFilter.setAttribute('aria-label', '世界书筛选');
+    for (const [value, label] of [['all', '全部'], ['selected', '已选']]) {
+        const option = el('option', '', label); option.value = value; worldbookFilter.append(option);
+    }
+    const clearWorldbookSearch = button('清空搜索', () => { worldbookSearch.value = ''; worldbookPage = 1; renderHostCatalog(getState()); extraSection.scrollIntoView({ block: 'start' }); worldbookSearch.focus({ preventScroll: true }); });
+    const worldbookToolbar = el('div', 'pw-worldbook-toolbar'); worldbookToolbar.append(worldbookSearch, clearWorldbookSearch, worldbookFilter);
+    for (const [node, event] of [[worldbookSearch, 'input'], [worldbookFilter, 'change']]) node.addEventListener(event, () => { worldbookPage = 1; renderHostCatalog(getState()); });
+    const worldbookResultCount = el('p', 'pw-hint pw-worldbook-result-count'); worldbookResultCount.setAttribute('role', 'status');
+    const previousWorldbookPage = button('上一页', () => { if (worldbookPage > 1) { worldbookPage--; renderHostCatalog(getState()); extraSection.scrollIntoView({ block: 'start' }); } });
+    const nextWorldbookPage = button('下一页', () => { worldbookPage++; renderHostCatalog(getState()); extraSection.scrollIntoView({ block: 'start' }); });
+    const worldbookPageNumber = el('span', 'pw-worldbook-page-number'); worldbookPageNumber.setAttribute('aria-live', 'polite');
+    const worldbookPagination = el('div', 'pw-worldbook-pagination'); worldbookPagination.append(previousWorldbookPage, worldbookPageNumber, nextWorldbookPage);
+    extraSection.append(el('h3', '', '额外加入规划'), worldbookToolbar, worldbookResultCount, extraBooks, worldbookPagination);
     worldbooksPage.append(worldbooksHead, worldbookStatus, mountedSection, extraSection);
     const presetToolbar = el('div', 'pw-preset-toolbar');
     const presetDrawers = el('div', 'pw-preset-drawers');
@@ -291,7 +329,7 @@ export function createWorkbench({ getState, onAction }) {
     }
     for (const drawer of drawers) { drawer.hidden = true; presetDrawers.append(drawer); }
     presetToolbar.append(button('管理', () => togglePresetDrawer(manageDrawer), { iconName: 'settings' }), button('导入', () => togglePresetDrawer(importDrawer), { iconName: 'upload' }), button('检查', () => togglePresetDrawer(checkDrawer), { iconName: 'file' }), newPromptButton);
-    presets.append(presetHead, presetSelect, presetToolbar, presetDrawers, importInput, presetUnsaved, undoNotice, presetGroups, presetWarnings);
+    presets.append(presetHead, presetSelectRow, presetSaveStatus, presetToolbar, presetDrawers, importInput, presetUnsaved, undoNotice, presetGroups, presetWarnings);
     const inspectionDetails = el('details', 'pw-inspection pw-advanced');
     inspectionDetails.append(el('summary', '', '本轮读取与用量'));
     const inspectButton = button('读取本轮资料', () => act('inspectPrompts', { input: input.value }), { className: 'pw-inspect-button' });
@@ -366,15 +404,25 @@ export function createWorkbench({ getState, onAction }) {
     const outputActions = el('div', 'pw-output-actions');
     const copyButton = button('复制大纲', () => act('copy'), { iconName: 'copy' });
     const fillButton = button('填入输入框', () => act('fillInput'), { iconName: 'external' });
+    const rerollButton = button('重生成大纲', () => {
+        if (isBlocked() || !getState().plan) return;
+        if (dirtyPlan) {
+            statusMessage.textContent = '大纲有未应用的修改，请先应用修改。';
+            planView = 'edit'; render(); return;
+        }
+        act('rerollPlan', { input: input.value });
+    }, { className: 'pw-reroll-plan' });
     const writeButton = button('确认并扩写', () => act('confirmAndWrite'), { className: 'pw-primary', iconName: 'edit' });
-    outputActions.append(copyButton, fillButton, writeButton);
+    outputActions.append(copyButton, fillButton);
+    const primaryPlanActions = el('div', 'pw-output-actions pw-plan-primary-actions');
+    primaryPlanActions.append(rerollButton, writeButton);
     const manualHint = el('p', 'pw-hint pw-manual-hint', '填入后不会自动发送；若作为普通聊天消息发送，大纲可能进入历史与记忆。');
-    const draftHint = el('p', 'pw-hint pw-draft-hint', '有尚未应用的修改。请先应用修改，再复制或扩写。');
-    planSection.append(planHeader, planReading, planEditing, outputActions, draftHint, manualHint);
+    const draftHint = el('p', 'pw-hint pw-draft-hint', '有尚未应用的修改。请先应用修改，再重生成、复制或扩写。');
+    planSection.append(planHeader, planReading, planEditing, outputActions, primaryPlanActions, draftHint, manualHint);
     outlinePage.append(pageHeading, steps, inputField, generationActions, planSection);
 
     const promptEditorPage = el('section', 'pw-prompt-editor-page');
-    const promptBack = button('返回', () => withUnsavedGuard(() => { resetEditor(); render(); body.scrollTop = 0; }), { className: 'pw-back', iconName: 'back' });
+    const promptBack = button('返回', () => withUnsavedGuard(() => { resetEditor(); render(); restorePromptListPosition(); }), { className: 'pw-back', iconName: 'back' });
     const promptName = el('h2');
     const promptHeading = el('div', 'pw-editor-heading');
     promptHeading.append(promptBack, promptName);
@@ -385,7 +433,8 @@ export function createWorkbench({ getState, onAction }) {
     const keepEditing = button('继续编辑', () => { pendingLeave = null; leaveNotice.hidden = true; (promptDraft?.marker ? promptNameInput : promptText).focus(); });
     const discardEdits = button('放弃修改', () => {
         const next = pendingLeave;
-        pendingLeave = null; leaveNotice.hidden = true; dirtyPrompt = false;
+        resetEditor();
+        render();
         next?.();
     }, { className: 'pw-danger' });
     const leaveActions = el('div', 'pw-notice-actions'); leaveActions.append(keepEditing, discardEdits);
@@ -441,21 +490,25 @@ export function createWorkbench({ getState, onAction }) {
     presetsPage.append(presets, promptEditorPage);
     main.append(outlinePage, presetsPage, worldbooksPage);
 
+    const configPanel = el('section', 'pw-config-page pw-settings pw-page');
+    configPanel.setAttribute('aria-label', '配置');
+    configPanel.append(el('h2', 'pw-settings-page-title', '配置'));
     const settingsPanel = el('section', 'pw-settings pw-page');
     settingsPanel.setAttribute('aria-label', '设置');
     settingsPanel.append(el('h2', 'pw-settings-page-title', '设置'));
     const settingsFields = {};
-    function settingsSection(name, expanded = false) {
+    function settingsSection(name, expanded = false, parent = configPanel) {
         const section = el('details', 'pw-settings-section');
         section.append(el('summary', '', name)); section.open = expanded;
-        settingsPanel.append(section);
+        parent.append(section);
         return section;
     }
     function settingInput(section, key, label, type, placeholder, hint, extra = {}) {
         const node = control(type, placeholder);
         Object.assign(node, extra);
-        node.addEventListener('input', () => { settingsSaveStatus.textContent = '已修改，点击保存设置可保存到当前方案。'; });
+        node.addEventListener('input', () => { configDrafts.set(key, node.value); settingsSaveStatus.textContent = '已修改，点击保存设置可保存到当前方案。'; });
         node.addEventListener('change', () => {
+            configDrafts.set(key, node.value);
             let value = node.value;
             if (type === 'number') value = value === '' ? '' : Number(value);
             act('settings', { [key]: value });
@@ -469,11 +522,19 @@ export function createWorkbench({ getState, onAction }) {
     const appearanceSection = el('section', 'pw-appearance-section');
     appearanceSection.append(el('h3', '', '主题与阅读'), field('配色', themeSelect));
     appearancePage.append(appearanceHeading, appearanceSection);
-    const fontSizeInput = settingInput(appearanceSection, 'fontSize', '字号', 'number', '12', undefined, { min: '12', max: '18', step: '1', inputMode: 'numeric' });
-    const lineHeightInput = settingInput(appearanceSection, 'lineHeight', '行距', 'number', '1.75', undefined, { min: '1.4', max: '2', step: '0.05', inputMode: 'decimal' });
-    for (const [key, node, min, max] of [['fontSize', fontSizeInput, 12, 18], ['lineHeight', lineHeightInput, 1.4, 2]]) {
-        node.addEventListener('input', () => { const value = Number(node.value); if (node.value !== '' && value >= min && value <= max) act('settings', { [key]: value }); });
-    }
+    const fontSizeInput = control('number', '12');
+    Object.assign(fontSizeInput, { min: '10', max: '24', step: '0.5', inputMode: 'decimal' });
+    fontSizeInput.setAttribute('aria-label', '自定义字号（px）');
+    const lineHeightInput = control('number', '1.75');
+    Object.assign(lineHeightInput, { min: '1.2', max: '2.6', step: '0.05', inputMode: 'decimal' });
+    lineHeightInput.setAttribute('aria-label', '行距（倍数）');
+    fontSizeInput.addEventListener('input', updateAppearanceDraft);
+    lineHeightInput.addEventListener('input', updateAppearanceDraft);
+    const appearanceSave = button('保存美化', () => saveAppearance(), { className: 'pw-primary' });
+    const appearanceReset = button('恢复默认', () => saveAppearance({ theme: 'system', fontSize: '12', lineHeight: '1.75' }));
+    const appearanceActions = el('div', 'pw-appearance-actions'); appearanceActions.append(appearanceSave, appearanceReset);
+    const appearanceStatus = el('p', 'pw-hint pw-appearance-status'); appearanceStatus.setAttribute('role', 'status');
+    appearanceSection.append(field('自定义字号（px）', fontSizeInput), field('行距（倍数）', lineHeightInput), appearanceActions, appearanceStatus);
     const apiSection = settingsSection('规划连接', true);
     const apiProfileSelect = el('select', 'pw-input'); apiProfileSelect.setAttribute('aria-label', 'API 方案');
     apiProfileSelect.addEventListener('change', () => {
@@ -506,27 +567,30 @@ export function createWorkbench({ getState, onAction }) {
     settingInput(apiSection, 'baseUrl', '接口地址', 'url', 'https://…/v1', undefined, { autocomplete: 'url', spellcheck: false });
     const modelInput = settingInput(apiSection, 'model', '模型名称', 'text', '填写模型 ID', undefined, { autocomplete: 'off', spellcheck: false });
     const modelActions = el('div', 'pw-model-actions');
-    const fetchModelsButton = button('拉取模型', () => act('fetchModels', { settings: collectSettings(), apiKey: keyField.value }));
+    const fetchModelsButton = button('拉取模型', () => { modelSearch.value = ''; return act('fetchModels', { settings: collectSettings(), apiKey: keyField.value }); });
     const testApiButton = button('测试连接', () => act('testApi', { settings: collectSettings(), apiKey: keyField.value }));
     modelActions.append(fetchModelsButton, testApiButton);
     const modelsSelect = el('select', 'pw-input'); modelsSelect.setAttribute('aria-label', '接口返回的模型'); modelsSelect.hidden = true;
+    const modelSearch = control('search', '搜索模型'); modelSearch.setAttribute('aria-label', '搜索模型'); modelSearch.hidden = true;
+    modelSearch.addEventListener('input', () => renderModels(getState()));
+    const modelSearchStatus = el('p', 'pw-hint pw-model-search-status'); modelSearchStatus.setAttribute('role', 'status'); modelSearchStatus.hidden = true;
     modelsSelect.addEventListener('change', () => {
         if (!modelsSelect.value) return;
-        modelInput.value = modelsSelect.value; act('settings', { model: modelsSelect.value });
+        modelInput.value = modelsSelect.value; configDrafts.set('model', modelsSelect.value); act('settings', { model: modelsSelect.value });
     });
     const apiStatus = el('p', 'pw-hint pw-api-status'); apiStatus.setAttribute('role', 'status');
     const keyField = control('password', '填写 API 密钥');
     keyField.autocomplete = 'off';
     keyField.name = 'planning-session-token';
     keyField.spellcheck = false;
-    keyField.addEventListener('input', () => { settingsSaveStatus.textContent = '密钥已修改；是否记住取决于下方选项。'; });
+    keyField.addEventListener('input', () => { keyDraftDirty = true; settingsSaveStatus.textContent = '密钥已修改；是否记住取决于下方选项。'; });
     keyField.addEventListener('change', () => act('apiKey', { value: keyField.value }));
     apiSection.append(field('API 密钥', keyField, '密钥不保存到预设或导出文件。'));
     const rememberKeyLabel = el('label', 'pw-checkbox-label pw-remember-key');
     const rememberKey = control('checkbox'); rememberKey.setAttribute('aria-label', '在此浏览器记住密钥');
     rememberKey.addEventListener('change', () => saveAllSettings());
     rememberKeyLabel.append(rememberKey, el('span', '', '在此浏览器记住密钥'));
-    apiSection.append(rememberKeyLabel, el('p', 'pw-hint', '默认不记住。仅此浏览器保存，非加密存储，不随预设导出。'), modelActions, modelsSelect, apiStatus, el('p', 'pw-hint', '测试会发送极短请求，可能计费。'));
+    apiSection.append(rememberKeyLabel, el('p', 'pw-hint', '默认不记住。仅此浏览器保存，非加密存储，不随预设导出。'), modelActions, modelSearch, modelsSelect, modelSearchStatus, apiStatus, el('p', 'pw-hint', '测试会发送极短请求，可能计费。'));
     const advanced = el('details', 'pw-advanced');
     advanced.append(el('summary', '', '生成参数'));
     const advancedFields = el('div', 'pw-advanced-fields');
@@ -545,10 +609,10 @@ export function createWorkbench({ getState, onAction }) {
     for (const [value, text] of [['review', '先查看，再扩写'], ['auto', '自动注入并扩写'], ['manual', '只生成大纲，手动使用']]) {
         const opt = el('option', '', text); opt.value = value; modeSelect.append(opt);
     }
-    modeSelect.addEventListener('change', () => { settingsSaveStatus.textContent = '已修改，点击保存设置可确认当前配置。'; act('settings', { mode: modeSelect.value }); });
+    modeSelect.addEventListener('change', () => { configDrafts.set('mode', modeSelect.value); settingsSaveStatus.textContent = '已修改，点击保存设置可确认当前配置。'; act('settings', { mode: modeSelect.value }); });
     const autoLabel = el('label', 'pw-checkbox-label');
     const autoOnSend = control('checkbox');
-    autoOnSend.addEventListener('change', () => { settingsSaveStatus.textContent = '已修改，点击保存设置可确认当前配置。'; act('settings', { autoOnSend: autoOnSend.checked }); });
+    autoOnSend.addEventListener('change', () => { configDrafts.set('autoOnSend', autoOnSend.checked); settingsSaveStatus.textContent = '已修改，点击保存设置可确认当前配置。'; act('settings', { autoOnSend: autoOnSend.checked }); });
     autoLabel.append(autoOnSend, el('span', '', '发送时自动规划'));
     const modeHint = el('p', 'pw-hint');
     const modeField = field('规划时机', modeSelect); modeField.classList.add('pw-mode-field');
@@ -557,7 +621,7 @@ export function createWorkbench({ getState, onAction }) {
     function settingSelect(section, key, label, options) {
         const node = el('select', 'pw-input'); node.setAttribute('aria-label', label);
         node.append(...options.map(([value, text]) => { const option = el('option', '', text); option.value = value; return option; }));
-        node.addEventListener('change', () => { settingsSaveStatus.textContent = '已修改，点击保存设置可确认当前配置。'; act('settings', { [key]: node.value }); });
+        node.addEventListener('change', () => { configDrafts.set(key, node.value); settingsSaveStatus.textContent = '已修改，点击保存设置可确认当前配置。'; act('settings', { [key]: node.value }); });
         settingsFields[key] = node; section.append(field(label, node)); return node;
     }
     const injectionPosition = settingSelect(injectionSection, 'injectionPosition', '注入位置', [['in_chat', '聊天历史中'], ['before_prompt', '角色/场景提示之前'], ['in_prompt', '角色/场景提示之后']]);
@@ -576,7 +640,7 @@ export function createWorkbench({ getState, onAction }) {
     const detectedPath = el('p', 'pw-hint pw-detected-path');
     animaAdvanced.append(detectedPath);
     animaSection.append(animaDetection, el('p', 'pw-hint', '检测不会召回记忆或消耗保留次数'), animaAdvanced);
-    const updateSection = settingsSection('扩展更新');
+    const updateSection = settingsSection('扩展更新', true, settingsPanel);
     const updateVersion = el('p', 'pw-hint');
     const updatePhase = el('p', 'pw-update-phase');
     const updateMessage = el('p', 'pw-hint'); updateMessage.setAttribute('role', 'status');
@@ -605,8 +669,9 @@ export function createWorkbench({ getState, onAction }) {
     settingsSaveBar.append(settingsSaveButton, settingsSaveStatus);
     const workshopTools = createWorkshopTools({ getState, onAction: act });
     outlinePage.append(workshopTools.outlineElement);
-    settingsPanel.append(workshopTools.settingsElement, logsDetails, settingsSaveBar);
-    main.append(settingsPanel, appearancePage);
+    configPanel.append(settingsSaveBar);
+    settingsPanel.append(logsDetails, workshopTools.settingsElement);
+    main.append(configPanel, settingsPanel, appearancePage);
     body.append(main);
     shell.append(body, statusMessage);
 
@@ -631,6 +696,7 @@ export function createWorkbench({ getState, onAction }) {
         outlinePage.hidden = activeTab !== 'outline';
         presetsPage.hidden = activeTab !== 'presets';
         worldbooksPage.hidden = activeTab !== 'worldbooks';
+        configPanel.hidden = activeTab !== 'config';
         settingsPanel.hidden = activeTab !== 'settings';
         appearancePage.hidden = activeTab !== 'appearance';
         promptEditorPage.hidden = activeTab !== 'presets' || !(selectedPrompt || creatingPrompt);
@@ -640,6 +706,16 @@ export function createWorkbench({ getState, onAction }) {
         selectedPrompt = null; creatingPrompt = false; dirtyPrompt = false;
         promptDraft = null; promptBaseline = ''; pendingLeave = null;
         leaveNotice.hidden = true; deleteNotice.hidden = true;
+    }
+    function rememberPromptListPosition(id = null) {
+        if (selectedPrompt || creatingPrompt) return;
+        promptListReturn = { top: body.scrollTop, id };
+    }
+    function restorePromptListPosition() {
+        if (!promptListReturn) return;
+        body.scrollTop = promptListReturn.top;
+        const row = [...presetGroups.querySelectorAll('.pw-prompt-row')].find(node => node.dataset.promptId === promptListReturn.id);
+        if (row?.getClientRects().length) row.scrollIntoView({ block: 'nearest' });
     }
     function guardPresetChange(next, { keepName = false } = {}) {
         withUnsavedGuard(() => {
@@ -653,8 +729,48 @@ export function createWorkbench({ getState, onAction }) {
         for (const [key, node] of Object.entries(settingsFields)) result[key] = node.type === 'number' ? (node.value === '' ? '' : Number(node.value)) : node.value;
         result.mode = modeSelect.value;
         result.autoOnSend = autoOnSend.checked;
-        result.theme = themeSelect.value;
         return result;
+    }
+    function savedAppearance() {
+        const settings = getState().settings || {};
+        return { theme: settings.theme || 'system', fontSize: String(settings.fontSize || '12'), lineHeight: String(settings.lineHeight || '1.75') };
+    }
+    function updateAppearanceDraft() {
+        appearanceDraft = { theme: themeSelect.value, fontSize: fontSizeInput.value, lineHeight: lineHeightInput.value };
+        const saved = savedAppearance();
+        appearanceDirty = appearanceDraft.theme !== saved.theme || appearanceDraft.fontSize.trim() === '' || appearanceDraft.lineHeight.trim() === ''
+            || Number(appearanceDraft.fontSize) !== Number(saved.fontSize) || Number(appearanceDraft.lineHeight) !== Number(saved.lineHeight);
+        appearanceFeedback = '';
+        renderAppearance();
+    }
+    function renderAppearance() {
+        if (!appearanceDirty || !appearanceDraft) appearanceDraft = savedAppearance();
+        const { theme, fontSize, lineHeight } = appearanceDraft;
+        themeSelect.value = theme;
+        setInputValue(fontSizeInput, fontSize); setInputValue(lineHeightInput, lineHeight);
+        dialog.dataset.theme = ['system', 'light', 'dark', 'host'].includes(theme) ? theme : 'system';
+        const font = Number(fontSize), height = Number(lineHeight);
+        const saved = savedAppearance();
+        dialog.style.setProperty('--pw-font-size', `${Number.isFinite(font) && font >= 10 && font <= 24 ? font : saved.fontSize}px`);
+        dialog.style.setProperty('--pw-line-height', String(Number.isFinite(height) && height >= 1.2 && height <= 2.6 ? height : saved.lineHeight));
+        appearanceStatus.textContent = appearanceFeedback || (savingAppearance ? '正在保存…' : appearanceDirty ? '美化修改未保存，当前为预览。' : '美化已保存。');
+        appearanceStatus.classList.toggle('pw-error', Boolean(appearanceFeedback));
+        for (const node of appearancePage.querySelectorAll('button,input,select')) node.disabled = isBlocked() || savingAppearance;
+        appearanceSave.disabled = isBlocked() || savingAppearance || !appearanceDirty;
+    }
+    async function saveAppearance(defaults) {
+        if (isBlocked() || savingAppearance) return;
+        const values = defaults || { theme: themeSelect.value, fontSize: fontSizeInput.value, lineHeight: lineHeightInput.value };
+        const font = Number(values.fontSize), height = Number(values.lineHeight);
+        if (!String(values.fontSize).trim() || !Number.isFinite(font) || font < 10 || font > 24
+            || !String(values.lineHeight).trim() || !Number.isFinite(height) || height < 1.2 || height > 2.6) {
+            appearanceFeedback = '字号请填 10–24 px，行距请填 1.2–2.6 倍。'; renderAppearance(); return;
+        }
+        savingAppearance = true; renderAppearance();
+        const result = await act('saveAppearance', { theme: values.theme, fontSize: font, lineHeight: height });
+        savingAppearance = false;
+        if (result !== false) { appearanceDirty = false; appearanceDraft = null; appearanceFeedback = ''; }
+        renderAppearance();
     }
     function apiPayload() {
         return { name: apiProfileName.value.trim(), settings: collectSettings(), apiKey: keyField.value, rememberKey: rememberKey.checked };
@@ -669,11 +785,11 @@ export function createWorkbench({ getState, onAction }) {
     }
     function hasUnsavedChanges() {
         const state = getState();
-        if (dirtyPrompt || dirtyPlan || presetNameDirty || apiDirty()) return true;
+        if (dirtyPrompt || dirtyPlan || presetNameDirty || appearanceDirty || apiDirty()) return true;
         const settings = state.settings || {};
         if (Object.entries(settingsFields).some(([key, node]) => node.value !== String(settings[key] ?? ''))) return true;
         return modeSelect.value !== (settings.mode || 'review') || autoOnSend.checked !== Boolean(settings.autoOnSend)
-            || themeSelect.value !== (settings.theme || 'system') || keyField.value !== (state.apiKey || '');
+            || keyField.value !== (state.apiKey || '');
     }
     async function performUpdate(type) {
         if (isBlocked()) return;
@@ -691,6 +807,8 @@ export function createWorkbench({ getState, onAction }) {
         apiUnsavedNotice.scrollIntoView({ block: 'nearest' });
     }
     function markApiSaved() {
+        for (const key of ['baseUrl', 'model', 'temperature', 'maxTokens']) configDrafts.delete(key);
+        keyDraftDirty = false;
         apiKeyBaseline = keyField.value; rememberBaseline = rememberKey.checked;
         apiUnsavedNotice.hidden = true; pendingApiChange = null;
     }
@@ -705,7 +823,7 @@ export function createWorkbench({ getState, onAction }) {
         if (isBlocked()) return;
         const payload = apiPayload();
         const result = await act('saveSettings', { settings: payload.settings, apiKey: payload.apiKey, rememberKey: payload.rememberKey, profileName: payload.name });
-        if (result !== false) { markApiSaved(); settingsSaveStatus.textContent = '设置已保存。'; render(); }
+        if (result !== false) { markApiSaved(); configDrafts.clear(); settingsSaveStatus.textContent = '设置已保存。'; render(); }
         else rememberKey.checked = Boolean(getState().rememberApiKey);
     }
     function withUnsavedGuard(next) {
@@ -735,6 +853,7 @@ export function createWorkbench({ getState, onAction }) {
     }
     function newPrompt(groupId = '') {
         if (isBlocked() || savingPrompt) return;
+        rememberPromptListPosition();
         withUnsavedGuard(() => {
             resetEditor(); creatingPrompt = true; activeTab = 'presets';
             loadPromptDraft({ name: '', content: '', role: 'system' }, groupId);
@@ -744,6 +863,7 @@ export function createWorkbench({ getState, onAction }) {
     }
     function openPrompt(id) {
         if (isBlocked() || savingPrompt || (selectedPrompt === id && !creatingPrompt)) return;
+        rememberPromptListPosition(id);
         withUnsavedGuard(() => {
             resetEditor(); selectedPrompt = id; activeTab = 'presets';
             render(); body.scrollTop = 0; main.scrollTop = 0;
@@ -761,7 +881,10 @@ export function createWorkbench({ getState, onAction }) {
         const result = await act(isNew ? 'createPrompt' : 'editPrompt', isNew ? payload : { id: selectedPrompt, ...payload });
         savingPrompt = false;
         if (result !== false) {
-            if (isNew && result?.id) selectedPrompt = result.id;
+            if (isNew && result?.id) {
+                selectedPrompt = result.id;
+                if (promptListReturn) promptListReturn.id = result.id;
+            }
             if (!isNew || result?.id) {
                 creatingPrompt = false; dirtyPrompt = false; promptDraft = null;
                 leaveNotice.hidden = true; pendingLeave = null;
@@ -833,10 +956,18 @@ export function createWorkbench({ getState, onAction }) {
         if (dirtyPrompt) notes.push('有未保存的修改。');
         promptInfo.textContent = notes.join(' ');
         promptInfo.hidden = !notes.length;
+        renderPresetSaveStatus();
+    }
+    function renderPresetSaveStatus() {
+        presetSaveStatus.textContent = dirtyPrompt ? '条目修改未保存，请先保存条目。' : presetNameDirty ? '预设名称尚未保存。' : '当前预设已保存。';
     }
     function renderPreset(state) {
         const preset = state.preset || { prompts: [], groups: [], order: [] };
-        if (seenPresetId !== state.activePresetId) { seenPresetId = state.activePresetId; presetNameDirty = false; presetDeleteNotice.hidden = true; presetUnsaved.hidden = true; }
+        if (seenPresetId !== state.activePresetId) {
+            seenPresetId = state.activePresetId; presetNameDirty = false; presetDeleteNotice.hidden = true; presetUnsaved.hidden = true;
+            promptListReturn = null;
+            if (activeTab === 'presets') body.scrollTop = 0;
+        }
         if (!presetNameDirty) setInputValue(presetNameInput, preset.name || '');
         undoNotice.hidden = !state.undoDeletion;
         undoText.textContent = state.undoDeletion ? `已删除「${state.undoDeletion.name || '条目'}」` : '';
@@ -960,35 +1091,59 @@ export function createWorkbench({ getState, onAction }) {
         }
         const books = Array.isArray(catalog.worldbooks) ? catalog.worldbooks : [];
         const selected = Array.isArray(state.extraWorldbooks) ? state.extraWorldbooks : [];
-        const booksSignature = JSON.stringify([books, selected]);
+        const selectedNames = new Set(selected);
+        const mounted = books.filter(book => book.mounted);
+        const mountedNames = new Set(mounted.map(book => book.name));
+        // Existing extra selections remain removable if the host later mounts the same book.
+        const available = books.filter(book => !mountedNames.has(book.name) || selectedNames.has(book.name));
+        for (const name of selected) if (!books.some(book => book.name === name)) available.push({ name, unavailable: true });
+        const query = worldbookSearch.value.trim().toLocaleLowerCase();
+        const filtered = available.filter(book => (!query || book.name.toLocaleLowerCase().includes(query)) && (worldbookFilter.value !== 'selected' || selectedNames.has(book.name)));
+        const pageCount = Math.max(1, Math.ceil(filtered.length / 20));
+        worldbookPage = Math.max(1, Math.min(worldbookPage, pageCount));
+        const visible = filtered.slice((worldbookPage - 1) * 20, worldbookPage * 20);
+        const booksSignature = JSON.stringify([books, selected, query, worldbookFilter.value, worldbookPage]);
         if (extraBooks.dataset.signature !== booksSignature) {
             const sourceNames = { global: '全局', character: '角色', extra: '角色附加', persona: '用户人格', chat: '当前聊天' };
-            const mounted = books.filter(book => book.mounted);
             worldbooksMounted.replaceChildren(...(mounted.length ? mounted.map(book => {
                 const row = el('div', 'pw-mounted-book');
-                row.append(icon('book'));
-                const text = el('div', 'pw-book-copy'); text.append(el('span', '', book.name)); row.append(text);
                 const sources = Array.isArray(book.sources) ? book.sources.map(source => sourceNames[source] || source).join('、') : '';
-                if (sources) text.append(el('span', 'pw-hint', sources));
+                const name = el('span', 'pw-worldbook-name', book.name); name.title = book.name;
+                row.append(name);
+                if (sources) row.append(el('span', 'pw-worldbook-source', sources));
+                row.title = `${book.name}${sources ? ` · ${sources}` : ''}`;
                 return row;
-            }) : [el('p', 'pw-hint', '目录中尚未列出挂载世界书。')]));
-            const available = books.filter(book => !book.mounted || selected.includes(book.name));
-            for (const name of selected) if (!books.some(book => book.name === name)) available.push({ name, unavailable: true });
-            extraBooks.replaceChildren(...(available.length ? available.map(book => {
+            }) : [el('p', 'pw-hint', '当前没有挂载世界书。')]));
+            extraBooks.replaceChildren(...(visible.length ? visible.map(book => {
                 const label = el('label', 'pw-book-checkbox');
-                const checkbox = control('checkbox'); checkbox.checked = selected.includes(book.name);
-                const suffix = book.unavailable ? '（目录中未找到）' : book.mounted ? '（已挂载）' : '';
+                label.dataset.worldbookName = book.name; label.title = book.name;
+                const checkbox = control('checkbox'); checkbox.checked = selectedNames.has(book.name);
+                checkbox.disabled = isBlocked(state);
                 checkbox.setAttribute('aria-label', `额外世界书：${book.name}`);
-                checkbox.addEventListener('change', () => {
+                checkbox.addEventListener('change', async () => {
                     if (isBlocked()) return;
                     const names = new Set(getState().extraWorldbooks || []);
                     if (checkbox.checked) names.add(book.name); else names.delete(book.name);
-                    act('extraWorldbooks', { names: [...names] });
+                    await act('extraWorldbooks', { names: [...names] });
+                    checkbox.checked = (getState().extraWorldbooks || []).includes(book.name);
                 });
-                label.append(checkbox, icon('book'), el('span', '', `${book.name}${suffix}`)); return label;
-            }) : [el('p', 'pw-hint', '刷新目录后可选择额外世界书。')]));
+                label.append(checkbox, el('span', 'pw-worldbook-name', book.name));
+                if (book.unavailable || mountedNames.has(book.name)) label.append(el('span', 'pw-worldbook-label', book.unavailable ? '未找到' : '已挂载'));
+                return label;
+            }) : [el('p', 'pw-hint', query ? '没有匹配的世界书。' : worldbookFilter.value === 'selected' ? '尚未选择额外世界书。' : '刷新目录后可选择额外世界书。')]));
             extraBooks.dataset.signature = booksSignature;
         }
+        mountedSummary.textContent = `当前挂载 · ${mounted.length}`;
+        const selectedCount = selected.length;
+        worldbookResultCount.textContent = `${filtered.length} 项结果 · 已选 ${selectedCount}`;
+        worldbookPageNumber.textContent = `${worldbookPage} / ${pageCount}`;
+        previousWorldbookPage.disabled = isBlocked(state) || worldbookPage <= 1;
+        nextWorldbookPage.disabled = isBlocked(state) || worldbookPage >= pageCount;
+        clearWorldbookSearch.disabled = isBlocked(state) || !worldbookSearch.value;
+        previousWorldbookPage.dataset.disabled = String(worldbookPage <= 1);
+        nextWorldbookPage.dataset.disabled = String(worldbookPage >= pageCount);
+        clearWorldbookSearch.dataset.disabled = String(!worldbookSearch.value);
+        worldbookPagination.hidden = filtered.length <= 20;
         const status = state.libraryBusy ? '正在读取酒馆目录…' : typeof state.libraryStatus === 'string' ? state.libraryStatus : state.libraryStatus?.message || '';
         hostPresetStatus.textContent = status; worldbookStatus.textContent = status;
         hostPresetStatus.hidden = !status; worldbookStatus.hidden = !status;
@@ -1083,6 +1238,8 @@ export function createWorkbench({ getState, onAction }) {
         }
         apiProfileSelect.value = state.activeApiProfileId || '';
         if (seenApiProfileId !== state.activeApiProfileId || seenApiProfileId === undefined) {
+            for (const key of ['baseUrl', 'model', 'temperature', 'maxTokens']) configDrafts.delete(key);
+            keyDraftDirty = false;
             seenApiProfileId = state.activeApiProfileId || '';
             const profile = profiles.find(p => p.id === state.activeApiProfileId);
             apiProfileName.value = profile?.name || '';
@@ -1090,14 +1247,7 @@ export function createWorkbench({ getState, onAction }) {
             apiKeyBaseline = state.apiKey || ''; rememberBaseline = Boolean(state.rememberApiKey);
             apiUnsavedNotice.hidden = true; apiDeleteNotice.hidden = true; pendingApiChange = null;
         }
-        const models = Array.isArray(state.models) ? state.models.filter(model => typeof model === 'string') : [];
-        const modelSignature = JSON.stringify(models);
-        if (modelsSelect.dataset.signature !== modelSignature) {
-            const first = el('option', '', '从接口返回的模型中选择'); first.value = '';
-            modelsSelect.replaceChildren(first, ...models.map(model => { const option = el('option', '', model); option.value = model; return option; }));
-            modelsSelect.dataset.signature = modelSignature;
-        }
-        modelsSelect.hidden = !models.length;
+        renderModels(state);
         apiStatus.textContent = typeof state.apiStatus === 'string' ? state.apiStatus : state.apiStatus?.message || '';
         apiStatus.hidden = !apiStatus.textContent;
         const logs = Array.isArray(state.logs) ? state.logs : [];
@@ -1111,6 +1261,28 @@ export function createWorkbench({ getState, onAction }) {
             }) : [el('p', 'pw-hint', '本页尚无运行日志。')]));
             logList.dataset.signature = logsSignature;
         }
+    }
+    function renderModels(state) {
+        const models = (Array.isArray(state.models) ? state.models.filter(model => typeof model === 'string') : [])
+            .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+        const sourceSignature = JSON.stringify([state.activeApiProfileId, models]);
+        if (modelsSelect.dataset.sourceSignature !== sourceSignature) {
+            modelsSelect.dataset.sourceSignature = sourceSignature;
+            modelSearch.value = '';
+        }
+        const query = modelSearch.value.trim().toLocaleLowerCase();
+        const filtered = models.filter(model => !query || model.toLocaleLowerCase().includes(query));
+        const signature = JSON.stringify(filtered);
+        if (modelsSelect.dataset.signature !== signature) {
+            const first = el('option', '', filtered.length ? '从接口返回的模型中选择' : '没有匹配的模型'); first.value = '';
+            modelsSelect.replaceChildren(first, ...filtered.map(model => { const option = el('option', '', model); option.value = model; return option; }));
+            modelsSelect.dataset.signature = signature;
+        }
+        modelsSelect.value = filtered.includes(modelInput.value) ? modelInput.value : '';
+        modelSearch.hidden = !models.length;
+        modelsSelect.hidden = !models.length;
+        modelSearchStatus.hidden = !models.length || filtered.length > 0;
+        modelSearchStatus.textContent = modelSearchStatus.hidden ? '' : '无匹配模型，可手动填写。';
     }
     function renderPlan(state) {
         const raw = state.rawPlan || state.plan?.xml || '';
@@ -1164,6 +1336,9 @@ export function createWorkbench({ getState, onAction }) {
         const state = getState();
         const noPlan = !state.plan;
         const processing = Boolean((state.busy && !state.awaitingReview) || state.apiBusy || state.animaChecking || state.libraryBusy || state.update?.phase === 'installing');
+        rerollButton.hidden = noPlan;
+        rerollButton.disabled = noPlan || isBlocked(state) || dirtyPlan;
+        rerollButton.title = dirtyPlan ? '请先应用大纲修改' : '';
         copyButton.disabled = noPlan || processing || dirtyPlan;
         fillButton.disabled = noPlan || processing || dirtyPlan;
         writeButton.disabled = noPlan || processing || dirtyPlan;
@@ -1177,18 +1352,13 @@ export function createWorkbench({ getState, onAction }) {
         if (destroyed) return;
         const state = getState();
         const settings = state.settings || {};
-        const theme = ['system', 'light', 'dark', 'host'].includes(settings.theme) ? settings.theme : 'system';
-        dialog.dataset.theme = theme; themeSelect.value = theme;
-        themeSelect.disabled = isBlocked(state);
-        const fontSize = Number(settings.fontSize), lineHeight = Number(settings.lineHeight);
-        dialog.style.setProperty('--pw-font-size', `${Number.isFinite(fontSize) && fontSize >= 12 && fontSize <= 18 ? fontSize : 12}px`);
-        dialog.style.setProperty('--pw-line-height', String(Number.isFinite(lineHeight) && lineHeight >= 1.4 && lineHeight <= 2 ? lineHeight : 1.75));
+        renderAppearance();
         renderApiProfiles(state);
         setInputValue(input, state.input);
-        setInputValue(keyField, state.apiKey);
-        for (const [key, node] of Object.entries(settingsFields)) setInputValue(node, settings[key]);
-        modeSelect.value = settings.mode || 'review';
-        autoOnSend.checked = Boolean(settings.autoOnSend);
+        if (!keyDraftDirty) setInputValue(keyField, state.apiKey);
+        for (const [key, node] of Object.entries(settingsFields)) if (!configDrafts.has(key)) setInputValue(node, settings[key]);
+        if (!configDrafts.has('mode')) modeSelect.value = settings.mode || 'review';
+        if (!configDrafts.has('autoOnSend')) autoOnSend.checked = Boolean(settings.autoOnSend);
         modeHint.textContent = settings.mode === 'auto' ? '大纲通过格式检查后直接交给主模型。' : settings.mode === 'manual' ? '只生成大纲，不自动注入主请求。' : '大纲生成后暂停，确认后再交给主模型。';
         generateButton.disabled = isBlocked(state);
         generateButton.querySelector('span').textContent = state.busy ? '正在处理…' : state.animaChecking ? '检测记忆扩展…' : state.preview ? '载入示例大纲' : '生成大纲';
@@ -1208,8 +1378,8 @@ export function createWorkbench({ getState, onAction }) {
         renderHostCatalog(state);
         renderImportReview(state);
         for (const node of presets.querySelectorAll('button,input,select,textarea')) node.disabled = isBlocked(state) || savingPrompt || node.dataset.disabled === 'true';
-        for (const node of settingsPanel.querySelectorAll('button,input,select,textarea')) node.disabled = isBlocked(state);
-        for (const node of [...worldbooksPage.querySelectorAll('button,input,select,textarea'), ...appearancePage.querySelectorAll('button,input,select,textarea')]) node.disabled = isBlocked(state);
+        for (const node of [...configPanel.querySelectorAll('button,input,select,textarea'), ...settingsPanel.querySelectorAll('button,input,select,textarea')]) node.disabled = isBlocked(state);
+        for (const node of worldbooksPage.querySelectorAll('button,input,select,textarea')) node.disabled = isBlocked(state) || node.dataset.disabled === 'true';
         apiProfileDeleteButton.disabled = isBlocked(state) || (state.apiProfiles?.length || 0) <= 1;
         presetDeleteButton.disabled = isBlocked(state) || (state.presetLibrary?.length || 0) <= 1;
         hostPresetImport.disabled = isBlocked(state) || !hostPresetSelect.value;

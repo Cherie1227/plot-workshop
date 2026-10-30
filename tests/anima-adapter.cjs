@@ -31,7 +31,27 @@ async function fixture() {
 }
 async function test(name, fn){await fn();passed++;process.stdout.write(`PASS ${name}\n`);}
 (async()=>{
- await test('direct uses pending input and accepts genuine empty',async()=>{const f=await fixture();const r=await f.recall();assert.equal(r.status,'empty');assert.match(f.data.args.searchText,/新输入/);assert.equal(f.data.queryCalls,1);assert.equal(f.data.context.chat.length,2);});
+ await test('direct uses pending input and accepts genuine empty',async()=>{const f=await fixture();const r=await f.recall();assert.equal(r.status,'empty');assert.equal(r.memoryParts.length,0);assert.match(f.data.args.searchText,/新输入/);assert.equal(f.data.queryCalls,1);assert.equal(f.data.context.chat.length,2);});
+ await test('memory metadata retains complete source blocks and survives cache reuse without mutation',async()=>{
+   const f=await fixture();
+   f.data.context.extensionSettings.anima_memory_system.rag.injection_settings.recent_count=1;
+   f.data.context.extensionSettings.anima_memory_system.status.status_enabled=true;
+   f.data.variables={anima_data:'门仍开着。'};
+   f.data.entries=[{extra:{createdBy:'anima_summary',history:[{batch_id:1,slice_id:0,unique_id:'1_0',narrative_time:2}]},content:'<1_0>当前摘要</1_0>'}];
+   f.data.queryResult={merged_chat_results:[{text:'原始回忆\n第二行'}],merged_kb_results:[{text:'完整知识',doc_name:'设定文档'}]};
+   const first=await f.recall();
+   const parts=JSON.parse(JSON.stringify(first.memoryParts));
+   assert.deepEqual(parts,[
+     {header:'[Anima 聊天记忆]',content:'原始回忆\n第二行'},
+     {header:'[Anima 最近摘要]',content:'当前摘要'},
+     {header:'[Anima 知识库]',content:'以下是相关设定：\n[Source: 设定文档]\n完整知识'},
+     {header:'[Anima 当前状态]',content:'门仍开着。'},
+   ]);
+   assert.equal(first.text,parts.map(p=>`${p.header}\n${p.content}`).join('\n\n'));
+   first.memoryParts[0].content='外部修改';
+   const second=await f.recall();assert.deepEqual(JSON.parse(JSON.stringify(second.memoryParts)),parts);
+   assert.equal(second.text,first.text);assert.equal(f.data.queryCalls,1);
+ });
  await test('recent summary selection and exclusion use newest narrative file',async()=>{const f=await fixture();f.data.context.extensionSettings.anima_memory_system.rag.injection_settings.recent_count=1;f.data.entries=[{extra:{createdBy:'anima_summary',history:[{batch_id:9,slice_id:0,unique_id:'9_0',narrative_time:1}]},content:'<9_0>旧文件</9_0>'},{extra:{createdBy:'anima_summary',history:[{batch_id:1,slice_id:0,unique_id:'1_0',narrative_time:2}]},content:'<1_0>当前摘要</1_0>'}];const r=await f.recall();assert.match(r.text,/当前摘要/);assert.doesNotMatch(r.text,/旧文件/);assert.equal(f.data.args.excludeIds[0],'1_0');});
  await test('broken summary is failure not empty',async()=>{const f=await fixture();f.data.context.extensionSettings.anima_memory_system.rag.injection_settings.recent_count=1;f.data.entries=[{extra:{createdBy:'anima_summary',history:[{index:1}]},content:'wrong'}];await assert.rejects(f.recall(),e=>e.code==='ANIMA_SUMMARY_INVALID');assert.equal(f.data.queryCalls,0);});
  await test('fresh native capture retries reuse same round without second query',async()=>{const f=await fixture();await f.api.installAnimaObserver();const token=f.api.beginAnimaGeneration();await f.global.Anima_RAG_Interceptor([],0,null,'normal');const r=await f.recall({generationToken:token,userInput:'旧输入'});assert.equal(r.nativeAlreadyInjected,true);assert.equal(f.data.queryCalls,0);const reused=await f.recall({generationToken:token,userInput:'旧输入'});assert.equal(reused.reusedForRound,true);assert.equal(f.data.queryCalls,0);});
@@ -40,11 +60,82 @@ async function test(name, fn){await fn();passed++;process.stdout.write(`PASS ${n
  await test('native observation snapshot cannot be changed by later global payload mutation',async()=>{const f=await fixture();await f.api.installAnimaObserver();const token=f.api.beginAnimaGeneration();await f.global.Anima_RAG_Interceptor([],0,null,'normal');f.data.payload.query='unrelated';const result=await f.recall({generationToken:token,userInput:'旧输入'});assert.equal(result.status,'empty');});
  await test('automatic capture rejects unrelated concurrent query payload',async()=>{const f=await fixture();await f.api.installAnimaObserver();f.data.nativeQueryOverride='unrelated';const token=f.api.beginAnimaGeneration();await f.global.Anima_RAG_Interceptor([],0,null,'normal');await assert.rejects(f.recall({generationToken:token,userInput:'旧输入'}),e=>e.code==='ANIMA_QUERY_CHANGED');});
  await test('backend failure is never successful empty',async()=>{const f=await fixture();f.data.queryResult={_is_critical_failure:true,merged_chat_results:[],merged_kb_results:[]};await assert.rejects(f.recall(),e=>e.code==='ANIMA_QUERY_FAILED');});
- await test('RAG off reads only enabled summaries without vector query',async()=>{const f=await fixture();f.data.context.extensionSettings.anima_memory_system.rag.rag_enabled=false;f.data.entries=[{enabled:true,name:'chapter_1',extra:{createdBy:'anima_summary'},content:'有效摘要'},{enabled:false,extra:{createdBy:'anima_summary'},content:'已关闭摘要'}];const r=await f.recall();assert.match(r.text,/有效摘要/);assert.doesNotMatch(r.text,/已关闭/);assert.equal(f.data.queryCalls,0);});
+ await test('RAG off reads only enabled summaries without vector query',async()=>{const f=await fixture();f.data.context.extensionSettings.anima_memory_system.rag.rag_enabled=false;f.data.entries=[{enabled:true,name:'chapter_1',extra:{createdBy:'anima_summary'},content:'有效摘要'},{enabled:false,extra:{createdBy:'anima_summary'},content:'已关闭摘要'}];const r=await f.recall();assert.match(f.data.entries[0].content,/有效摘要/);assert.equal(r.text,'[Anima 摘要：chapter_1]\n有效摘要');assert.deepEqual(JSON.parse(JSON.stringify(r.memoryParts)),[{header:'[Anima 摘要：chapter_1]',content:'有效摘要'}]);assert.doesNotMatch(r.text,/已关闭/);assert.equal(f.data.queryCalls,0);});
  await test('context switch discards results',async()=>{const f=await fixture();f.data.queryHook=()=>{f.data.context.chatId='chat-B';return f.data.queryResult;};await assert.rejects(f.recall(),e=>e.code==='ANIMA_CONTEXT_CHANGED');});
  await test('cancelled direct query preserves successful round for retry',async()=>{const f=await fixture();const controller=new AbortController();f.data.queryHook=()=>{controller.abort();return f.data.queryResult;};await assert.rejects(f.recall({signal:controller.signal}),e=>e.code==='ABORTED');const result=await f.recall();assert.equal(result.reusedForRound,true);assert.equal(f.data.queryCalls,1);});
  await test('one-shot matching guard only skips a single normal attempt',async()=>{const f=await fixture();await f.api.installAnimaObserver();f.api.skipNextAnimaRecall({matches:()=>true});await f.global.Anima_RAG_Interceptor([],0,null,'normal');assert.equal(f.data.nativeCalls,0);await f.global.Anima_RAG_Interceptor([],0,null,'normal');assert.equal(f.data.nativeCalls,1);});
  await test('nonmatching guard is consumed and native keeps running',async()=>{const f=await fixture();await f.api.installAnimaObserver();let yes=false;f.api.skipNextAnimaRecall({matches:()=>yes});await f.global.Anima_RAG_Interceptor([],0,null,'normal');yes=true;await f.global.Anima_RAG_Interceptor([],0,null,'normal');assert.equal(f.data.nativeCalls,2);});
+ await test('explicit swipe guard skips exactly one matching fixed-reply attempt',async()=>{
+   const f=await fixture();await f.api.installAnimaObserver();
+   const reply={is_user:false,mes:'已生成正文',swipes:['已生成正文'],swipe_id:1};f.data.context.chat.push(reply);
+   const prefix=JSON.stringify(f.data.context.chat.slice(0,-1));
+   f.api.skipNextAnimaRecall({type:'swipe',matches:()=>f.data.context.chat.at(-1)===reply&&JSON.stringify(f.data.context.chat.slice(0,-1))===prefix});
+   const aborted=[];await f.global.Anima_RAG_Interceptor(f.data.context.chat.slice(0,-1),0,value=>aborted.push(value),'swipe');
+   assert.equal(f.data.nativeCalls,0);assert.equal(f.data.queryCalls,0);assert.deepEqual(aborted,[]);
+   await f.global.Anima_RAG_Interceptor([],0,null,'swipe');assert.equal(f.data.nativeCalls,1);
+ });
+ await test('nonmatching swipe proof aborts without native recall and cannot skip a later attempt',async()=>{
+   const f=await fixture();await f.api.installAnimaObserver();const aborted=[];
+   f.api.skipNextAnimaRecall({type:'swipe',matches:()=>false});
+   await assert.rejects(f.global.Anima_RAG_Interceptor([],0,value=>aborted.push(value),'swipe'),e=>e.code==='ANIMA_REUSE_GUARD');
+   assert.deepEqual(aborted,[true]);assert.equal(f.data.nativeCalls,0);
+   await f.global.Anima_RAG_Interceptor([],0,null,'swipe');assert.equal(f.data.nativeCalls,1);
+ });
+ await test('swipe proof requires literal true and aborts on synchronous or asynchronous errors',async()=>{
+   for(const matches of [()=> 'true',()=>1,()=>undefined,()=>{throw new Error('guard failed');},async()=>{throw new Error('guard failed');}]){
+     const f=await fixture();await f.api.installAnimaObserver();const aborted=[];
+     f.api.skipNextAnimaRecall({type:'swipe',matches});
+     await assert.rejects(f.global.Anima_RAG_Interceptor([],0,value=>aborted.push(value),'swipe'),e=>e.code==='ANIMA_REUSE_GUARD');
+     assert.deepEqual(aborted,[true]);assert.equal(f.data.nativeCalls,0);
+     await f.global.Anima_RAG_Interceptor([],0,null,'swipe');assert.equal(f.data.nativeCalls,1);
+   }
+ });
+ await test('swipe proof cannot authorize a context that changes while the match is awaited',async()=>{
+   const f=await fixture();await f.api.installAnimaObserver();const aborted=[];
+   f.api.skipNextAnimaRecall({type:'swipe',matches:async()=>{await Promise.resolve();f.data.context.chatId='chat-B';return true;}});
+   await assert.rejects(f.global.Anima_RAG_Interceptor([],0,value=>aborted.push(value),'swipe'),e=>e.code==='ANIMA_REUSE_GUARD');
+   assert.deepEqual(aborted,[true]);assert.equal(f.data.nativeCalls,0);
+ });
+ await test('a different generation type discards an explicit swipe guard without suppressing native recall',async()=>{
+   for(const type of ['normal','chat',undefined,'quiet']){
+     const f=await fixture();await f.api.installAnimaObserver();let checked=0;const aborted=[];
+     f.api.skipNextAnimaRecall({type:'swipe',matches:()=>{checked++;return true;}});
+     await f.global.Anima_RAG_Interceptor([],0,value=>aborted.push(value),type);
+     await f.global.Anima_RAG_Interceptor([],0,value=>aborted.push(value),'swipe');
+     assert.equal(checked,0);assert.equal(f.data.nativeCalls,2);assert.deepEqual(aborted,[]);
+   }
+ });
+ await test('default guard still ignores swipe and accepts normal chat or unspecified generation',async()=>{
+   for(const type of ['normal','chat',undefined]){
+     const f=await fixture();await f.api.installAnimaObserver();let checked=0;
+     f.api.skipNextAnimaRecall({matches:()=>{checked++;return true;}});
+     await f.global.Anima_RAG_Interceptor([],0,null,'swipe');assert.equal(f.data.nativeCalls,1);assert.equal(checked,0);
+     await f.global.Anima_RAG_Interceptor([],0,null,type);assert.equal(f.data.nativeCalls,1);assert.equal(checked,1);
+   }
+ });
+ await test('default guard exceptions retain native fallback without aborting',async()=>{
+   const f=await fixture();await f.api.installAnimaObserver();const aborted=[];
+   f.api.skipNextAnimaRecall({matches:()=>{throw new Error('old guard failed');}});
+   await f.global.Anima_RAG_Interceptor([],0,value=>aborted.push(value),'normal');
+   assert.equal(f.data.nativeCalls,1);assert.deepEqual(aborted,[]);
+ });
+ await test('disposing a cancelled swipe guard restores native recall without clearing a newer guard',async()=>{
+   const f=await fixture();await f.api.installAnimaObserver();
+   const cancelled=f.api.skipNextAnimaRecall({type:'swipe',matches:()=>true});cancelled();
+   await f.global.Anima_RAG_Interceptor([],0,null,'swipe');assert.equal(f.data.nativeCalls,1);
+   const older=f.api.skipNextAnimaRecall({type:'swipe',matches:()=>true});
+   f.api.skipNextAnimaRecall({type:'swipe',matches:()=>true});older();
+   await f.global.Anima_RAG_Interceptor([],0,null,'swipe');assert.equal(f.data.nativeCalls,1);
+   await f.global.Anima_RAG_Interceptor([],0,null,'swipe');assert.equal(f.data.nativeCalls,2);
+ });
+ await test('disposing during an awaited swipe proof aborts the pending attempt',async()=>{
+   const f=await fixture();await f.api.installAnimaObserver();let finish,started;const began=new Promise(resolve=>{started=resolve;});const aborted=[];
+   const dispose=f.api.skipNextAnimaRecall({type:'swipe',matches:()=>new Promise(resolve=>{finish=resolve;started();})});
+   const pending=f.global.Anima_RAG_Interceptor([],0,value=>aborted.push(value),'swipe');
+   await began;dispose();finish(true);
+   await assert.rejects(pending,e=>e.code==='ANIMA_REUSE_GUARD');assert.deepEqual(aborted,[true]);assert.equal(f.data.nativeCalls,0);
+   await f.global.Anima_RAG_Interceptor([],0,null,'swipe');assert.equal(f.data.nativeCalls,1);
+ });
  await test('missing helper cannot masquerade as no memories',async()=>{const f=await fixture();delete f.global.TavernHelper;await assert.rejects(f.recall(),e=>e.code==='ANIMA_HELPER_REQUIRED');});
  await test('unreviewed version is rejected before native import/query',async()=>{const f=await fixture();f.data.version='2.0';await assert.rejects(f.recall(),e=>e.code==='ANIMA_VERSION');assert.equal(f.data.queryCalls,0);});
  await test('regex deleting current input rejects old-history-only query',async()=>{const f=await fixture();f.data.context.extensionSettings.anima_memory_system.rag.regex_strings=[{removeAll:true}];await assert.rejects(f.recall(),e=>e.code==='ANIMA_EMPTY_QUERY');});
