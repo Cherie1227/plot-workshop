@@ -533,6 +533,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     }
     function cancel(message = '已取消；大纲没有写入聊天。') {
         if (writerReplay) writerReplay.failed = true;
+        if (writerReplay?.manual) { disposeReuse?.(); disposeReuse = null; writerReplay = null; }
         pendingWriterReceipt = null;
         nativeRegeneration = null;
         log('info', 'operation.cancelled', '当前操作已取消，临时注入已清理。', { stage: state.stage });
@@ -798,6 +799,16 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         return state.settings.enabled && typeof rewriteReply === 'function' && !state.busy && !state.apiBusy && !state.animaChecking
             && !state.libraryBusy && !hostGenerating && state.update.phase !== 'installing' && receiptCurrent();
     }
+    function canRewriteReason() {
+        if (!state.settings.enabled) return 'Vespera 已停用。';
+        if (typeof rewriteReply !== 'function') return '当前酒馆缺少滑动重写接口，请升级酒馆后使用正文重写。';
+        if (state.update.phase === 'installing') return 'Vespera 正在更新，完成后可重写。';
+        if (state.busy || state.apiBusy || state.animaChecking || state.libraryBusy) return '请先完成或取消当前操作，再重写正文。';
+        if (hostGenerating) return '正在生成，结束后可重写。';
+        if (!writerReceipt) return '本页还没有 Vespera 生成的正文；页面刷新或切换聊天后，请重新确认扩写一次。';
+        if (!receiptCurrent()) return '只能重写本页由 Vespera 生成、且仍是最后一条的正文。聊天前文或人设改变后，请重新规划。';
+        return '';
+    }
     async function rerollWriter() {
         const current = getContext();
         if (state.busy || state.apiBusy || state.animaChecking || state.libraryBusy || hostGenerating
@@ -898,10 +909,20 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
                 run.failed = true; abort(true); clearInjection(getContext());
                 fail(new Error('正文重写上下文已变化，或酒馆尝试连续自动重写；已停止本次请求。')); return;
             }
-            run.intercepted = true; writerActive = true;
-            injectForTurn(getContext(), { ...run.receipt.content, valid: () => writerReplay === run && !run.failed && receiptCurrent(run.receipt) });
-            log('info', 'writer.reroll.started', '重新注入此回复的固定大纲，只调用正文模型。');
-            return;
+            // A manual swipe may target an older floor; only the floor that owns
+            // this receipt (identified by its user input) may reuse its outline.
+            // Other floors fall through to the host's normal handling, never
+            // receiving a foreign outline.
+            const target = Array.isArray(chat) && chat.length ? chat.at(-1) : null;
+            if (run.manual && !(target?.is_user && String(target.mes ?? '') === run.receipt.input)) {
+                run.failed = true; disposeReuse?.(); disposeReuse = null; writerReplay = null;
+                anima.clearAnimaGeneration(generationToken); generationToken = undefined;
+            } else {
+                run.intercepted = true; writerActive = true;
+                injectForTurn(getContext(), { ...run.receipt.content, valid: () => writerReplay === run && !run.failed && receiptCurrent(run.receipt) });
+                log('info', 'writer.reroll.started', '重新注入此回复的固定大纲，只调用正文模型。');
+                return;
+            }
         }
         if (resuming) {
             try {
@@ -912,7 +933,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             return;
         }
         if (!state.settings.autoOnSend || type === 'quiet' || type === 'impersonate') return;
-        if (!normalType(type) && type !== 'regenerate') { abort(true); fail(new Error('自动规划支持普通发送和酒馆重新生成。续写或滑动分支请先关闭“发送时自动规划”。')); return; }
+        if (!normalType(type) && type !== 'regenerate') { abort(true); fail(new Error(type === 'swipe' ? '本楼层没有可沿用的有效大纲。要用同一大纲出候选，请将设置中的“酒馆重新生成”改为“优先沿用大纲，没有则生成”；要重新规划请使用酒馆的“重新生成”。' : '自动规划支持普通发送和酒馆重新生成。续写请先关闭“发送时自动规划”。')); return; }
         if (state.busy || state.apiBusy || state.animaChecking) { abort(true); fail(new Error('已有规划、API 操作或 Anima 检测正在进行，请先完成或取消。')); return; }
         let regenerationFallback = false, previousPlan = null;
         try {
@@ -1327,6 +1348,24 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             else { writerReplay.started = true; generationToken = anima.beginAnimaGeneration(); }
             return;
         }
+        // A manual swipe on this floor reuses its frozen outline under the reuse
+        // policy: inject the receipt as-is, skip a fresh Anima recall, and let the
+        // host append the swipe. The interceptor verifies the swiped floor.
+        if (!dryRun && type === 'swipe' && !resuming && state.settings.regeneratePolicy === 'reuse'
+            && state.update.phase !== 'installing' && !state.busy && !state.apiBusy && !state.animaChecking && receiptCurrent()) {
+            const receipt = writerReceipt;
+            const run = { receipt, started: true, intercepted: false, ended: false, failed: false, manual: true,
+                nextSwipe: receipt.message.swipes?.length || 1 };
+            try {
+                await anima.installAnimaObserver({ settings: settingsForAnima(true) });
+                if (!receiptCurrent(receipt)) throw new Error('滑动前聊天已变化。');
+                writerReplay = run;
+                disposeReuse = anima.skipNextAnimaRecall({ type: 'swipe', matches: () => writerReplay === run && !run.failed && receiptCurrent(receipt) });
+                generationToken = anima.beginAnimaGeneration();
+                log('info', 'writer.reroll.armed', '本次滑动沿用本楼层的固定大纲，只调用正文模型。');
+            } catch { writerReplay = null; disposeReuse?.(); disposeReuse = null; }
+            return;
+        }
         if (dryRun || (!state.settings.autoOnSend && !resuming) || type === 'quiet' || type === 'impersonate') return;
         clearInjection(getContext()); preparationError = null;
         try {
@@ -1357,6 +1396,18 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             const last = getContext().chat.at(-1);
             if (last && !last.is_user && !last.is_system && String(last.mes || '').trim()) anima.invalidateAnimaRoundCache?.();
         }
+        if (writerReplay?.manual) {
+            const run = writerReplay;
+            const fresh = run.receipt.message.swipes?.[run.nextSwipe];
+            if (!run.failed && run.intercepted && receiptCurrent(run.receipt)
+                && run.receipt.message.swipe_id === run.nextSwipe && typeof fresh === 'string' && fresh.trim() && fresh.trim() !== '...') {
+                log('success', 'writer.rerolled', '滑动生成已沿用本楼层固定大纲，未重新规划。');
+                status('已沿用本楼层大纲生成候选，可用消息下方的箭头切换版本。');
+            } else if (!run.failed) {
+                log('info', 'writer.reroll.unverified', '滑动重写的结果未能确认，请检查生成内容与酒馆的滑动生成设置。');
+            }
+            disposeReuse?.(); disposeReuse = null; writerReplay = null;
+        }
         pendingWriterReceipt = null; writerActive = false; clearInjection(getContext());
         nativeRegeneration = null;
         if (!gate) state.busy = false;
@@ -1381,8 +1432,8 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     listen('WORLDINFO_SETTINGS_UPDATED', onWorldChange);
     clearInjection(ctx); restoreDraft();
     return {
-        state, onAction, intercept, canRewrite,
-        attachQuickActions() { quickActions?.destroy(); quickActions = createWriterQuickActions({ getContext, onRewrite: () => onAction('rerollWriter'), canRewrite }); quickActions.refresh(); },
+        state, onAction, intercept, canRewrite, canRewriteReason,
+        attachQuickActions() { quickActions?.destroy(); quickActions = createWriterQuickActions({ getContext, onRewrite: () => onAction('rerollWriter'), canRewrite, rewriteReason: canRewriteReason }); quickActions.refresh(); },
         attachEntryPoints() { entryPoints?.destroy(); entryPoints = createWorkbenchEntryPoints({ onOpen: () => this.open() }); },
         startUpdates() { updater.start(); },
         async open() {

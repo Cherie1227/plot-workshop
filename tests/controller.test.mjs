@@ -822,6 +822,79 @@ test('failed or repeated writer swipes preserve old candidate and always clear t
     }
 });
 
+async function manualSwipe(f, { targetIndex } = {}) {
+    const index = targetIndex ?? f.ctx.chat.length - 1;
+    const message = f.ctx.chat[index];
+    message.swipes ??= [message.mes];
+    const nextSwipe = message.swipes.length;
+    message.swipe_id = nextSwipe;
+    let aborted = false;
+    await f.events.emit('GENERATION_STARTED', 'swipe', {}, false);
+    await f.plugin.intercept(f.ctx.chat.slice(0, index), 32000, () => { aborted = true; }, 'swipe');
+    const injected = f.ctx.extensionPrompts[INJECTION_KEY]?.value;
+    if (!aborted) { message.mes = `${message.mes}（候选）`; message.swipes[nextSwipe] = message.mes; }
+    else message.swipe_id = 0;
+    await f.events.emit('GENERATION_ENDED');
+    return { aborted, injected };
+}
+
+test('manual swipe under the reuse policy reuses the frozen outline without replanning or recalling', async t => {
+    const f = await fixture(t, { settings: { regeneratePolicy: 'reuse' } });
+    await f.plugin.onAction('generate', { input: f.input.value });
+    await f.plugin.onAction('confirmAndWrite');
+    const originalReply = f.ctx.chat.at(-1).mes, originalPrompt = f.calls.writer[0].prompt;
+    const recalls = f.calls.recalled, skipped = f.calls.skippedRecalls;
+    const first = await manualSwipe(f);
+    assert.equal(first.aborted, false);
+    assert.equal(first.injected, originalPrompt);
+    const second = await manualSwipe(f);
+    assert.equal(second.aborted, false);
+    assert.equal(second.injected, originalPrompt);
+    assert.equal(f.calls.planner.length, 1);
+    assert.equal(f.calls.recalled, recalls);
+    assert.ok(f.calls.skippedRecalls > skipped);
+    assert.equal(f.ctx.chat.at(-1).swipes.length, 3);
+    assert.equal(f.ctx.chat.at(-1).swipes[0], originalReply);
+    assert.equal(f.plugin.canRewrite(), true);
+    assert.equal(f.ctx.extensionPrompts[INJECTION_KEY], undefined);
+});
+
+test('manual swipe without the reuse policy stays native: bare when idle, guided abort with auto-plan', async t => {
+    const f = await fixture(t);
+    await f.plugin.onAction('generate', { input: f.input.value });
+    await f.plugin.onAction('confirmAndWrite');
+    const bare = await manualSwipe(f);
+    assert.equal(bare.aborted, false);
+    assert.equal(bare.injected, undefined);
+    assert.equal(f.ctx.chat.at(-1).swipes.length, 2);
+    assert.equal(f.calls.planner.length, 1);
+
+    const g = await fixture(t, { settings: { autoOnSend: true } });
+    await g.plugin.onAction('generate', { input: g.input.value });
+    await g.plugin.onAction('confirmAndWrite');
+    const guided = await manualSwipe(g);
+    assert.equal(guided.aborted, true);
+    assert.equal(guided.injected, undefined);
+    assert.equal(g.ctx.chat.at(-1).swipes.length, 1);
+    assert.equal(g.ctx.chat.at(-1).mes, '林澄接过信，暂时没有拆开。');
+    assert.equal(g.calls.planner.length, 1);
+});
+
+test('manual swipe on an older floor never receives the latest outline', async t => {
+    const f = await fixture(t, { settings: { regeneratePolicy: 'reuse' } });
+    await f.plugin.onAction('generate', { input: f.input.value });
+    await f.plugin.onAction('confirmAndWrite');
+    const last = f.ctx.chat.at(-1);
+    const older = await manualSwipe(f, { targetIndex: 0 });
+    assert.equal(older.aborted, false);
+    assert.equal(older.injected, undefined);
+    assert.equal(f.ctx.chat[0].swipes.length, 2);
+    assert.equal(last.swipes, undefined);
+    // Swiping an older floor edits the history prefix, which legitimately
+    // invalidates the latest floor's rewrite receipt.
+    assert.equal(f.plugin.canRewrite(), false);
+});
+
 test('automatic review waits for approval; cancellation sends no writer request', async t => {
     const { ctx, plugin, calls } = await fixture(t, { settings: { autoOnSend: true, mode: 'review' } });
     const generating = ctx.generate('normal');
