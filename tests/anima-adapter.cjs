@@ -32,6 +32,14 @@ async function fixture() {
 async function test(name, fn){await fn();passed++;process.stdout.write(`PASS ${name}\n`);}
 (async()=>{
  await test('direct uses pending input and accepts genuine empty',async()=>{const f=await fixture();const r=await f.recall();assert.equal(r.status,'empty');assert.equal(r.memoryParts.length,0);assert.match(f.data.args.searchText,/新输入/);assert.equal(f.data.queryCalls,1);assert.equal(f.data.context.chat.length,2);});
+ await test('disabling restores native Anima and re-enabling can install one fresh observer',async()=>{
+   const f=await fixture();const original=f.global.Anima_RAG_Interceptor;await f.api.installAnimaObserver();
+   const token=f.api.beginAnimaGeneration();f.api.releaseAnimaObserver();assert.equal(f.global.Anima_RAG_Interceptor,original);
+   await f.global.Anima_RAG_Interceptor([],0,null,'normal');assert.equal(f.data.nativeCalls,1);
+   await assert.rejects(f.recall({generationToken:token,userInput:'旧输入'}),e=>e.code==='ANIMA_OBSERVER_REQUIRED');
+   await f.api.installAnimaObserver();assert.notEqual(f.global.Anima_RAG_Interceptor,original);
+   const another=async()=>{};f.global.Anima_RAG_Interceptor=another;f.api.releaseAnimaObserver();assert.equal(f.global.Anima_RAG_Interceptor,another);
+ });
  await test('new chat without a worldbook or recall sources can plan without a backend call',async()=>{
    const f=await fixture();delete f.data.context.chatMetadata.anima_rag_active_files;
    f.global.TavernHelper.getChatWorldbookName=()=>null;

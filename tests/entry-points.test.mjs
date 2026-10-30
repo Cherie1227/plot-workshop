@@ -10,12 +10,18 @@ class Event {
 class Node {
     constructor(tag, doc) {
         this.tagName = tag.toUpperCase(); this.ownerDocument = doc; this.children = []; this.parentNode = null;
-        this.attributes = new Map(); this.listeners = new Map(); this.className = '';
+        this.attributes = new Map(); this.listeners = new Map(); this.className = ''; this.style = {}; this.hidden = false;
         this.classList = { add: value => { this.className = `${this.className} ${value}`.trim(); } };
     }
     setAttribute(key, value) { this.attributes.set(key, String(value)); }
     getAttribute(key) { return this.attributes.get(key) ?? null; }
     append(...nodes) { for (const node of nodes) { node.remove(); node.parentNode = this; this.children.push(node); this.ownerDocument?.changed(this); } }
+    insertBefore(node, anchor) {
+        assert.ok(this.children.includes(anchor)); node.remove(); node.parentNode = this;
+        this.children.splice(this.children.indexOf(anchor), 0, node); this.ownerDocument?.changed(this);
+    }
+    get nextElementSibling() { return this.parentNode?.children[this.parentNode.children.indexOf(this) + 1] || null; }
+    get lastElementChild() { return this.children.at(-1) || null; }
     remove() { if (!this.parentNode) return; const parent = this.parentNode; parent.children.splice(parent.children.indexOf(this), 1); this.parentNode = null; this.ownerDocument?.changed(parent); }
     addEventListener(type, callback) { if (!this.listeners.has(type)) this.listeners.set(type, new Set()); this.listeners.get(type).add(callback); }
     removeEventListener(type, callback) { this.listeners.get(type)?.delete(callback); }
@@ -38,7 +44,7 @@ class Document extends Node {
     constructor() {
         super('document'); this.ownerDocument = this; this.observers = new Set(); this.pending = new Set(); this.callbacks = 0;
         const doc = this;
-        this.defaultView = { MutationObserver: class {
+        this.defaultView = { getComputedStyle: node => ({ display: node.style.display || 'block', visibility: node.style.visibility || 'visible' }), MutationObserver: class {
             constructor(callback) { this.callback = callback; }
             observe(target, options) { assert.equal(target, doc); assert.deepEqual(options, { childList: true, subtree: true }); doc.observers.add(this); }
             disconnect() { doc.observers.delete(this); doc.pending.delete(this); }
@@ -102,6 +108,53 @@ test('click and pointer events cannot trigger ancestor drawer handlers; native E
     }
     assert.equal(hostEvents, 0);
     button.dispatchEvent(new Event('keydown', { key: 'Escape' })); assert.equal(hostEvents, 1);
+    entry.destroy();
+});
+
+test('places the entry third from the right while preserving every other slot order', () => {
+    const h = fixture();
+    for (let i = 0; i < 8; i++) h.holder.append(h.document.createElement('div'));
+    const original = [...h.holder.children];
+    const entry = createWorkbenchEntryPoints({ document: h.document, onOpen() {} });
+    const wrapper = h.button().parentNode;
+    assert.equal(h.holder.children.at(-3), wrapper);
+    assert.deepEqual(h.holder.children.filter(node => node !== wrapper), original);
+    h.document.body.append(h.document.createElement('p')); h.document.flush();
+    assert.equal(h.document.callbacks, 1, 'an unrelated mutation does not move the entry again');
+    entry.destroy();
+});
+
+test('hidden slots do not count, but a hidden toolbar retains its planned slot order', () => {
+    const h = fixture();
+    const visible = [h.drawer];
+    for (let i = 0; i < 3; i++) { const node = h.document.createElement('div'); visible.push(node); h.holder.append(node); }
+    for (const type of ['hidden', 'display', 'visibility']) {
+        const node = h.document.createElement('div');
+        if (type === 'hidden') node.hidden = true;
+        else node.style[type] = type === 'display' ? 'none' : 'hidden';
+        h.holder.append(node);
+    }
+    h.holder.style.display = 'none';
+    const original = [...h.holder.children];
+    const entry = createWorkbenchEntryPoints({ document: h.document, onOpen() {} });
+    const wrapper = h.button().parentNode;
+    assert.equal(wrapper.nextElementSibling, visible.at(-2));
+    assert.deepEqual(h.holder.children.filter(node => node !== wrapper), original);
+    entry.destroy();
+});
+
+test('new or removed toolbar slots update the placement without duplicate entries or observer loops', () => {
+    const h = fixture();
+    const entry = createWorkbenchEntryPoints({ document: h.document, onOpen() {} });
+    const wrapper = h.button().parentNode;
+    const added = h.document.createElement('div'); h.holder.append(added); h.document.flush();
+    assert.equal(h.holder.children.at(-3), wrapper);
+    const last = h.document.createElement('div'); h.holder.append(last); h.document.flush();
+    assert.equal(h.holder.children.at(-3), wrapper);
+    assert.deepEqual(h.holder.children.filter(node => node !== wrapper), [h.drawer, added, last]);
+    added.remove(); h.document.flush();
+    assert.equal(h.holder.children.at(-3), wrapper);
+    assert.equal(h.document.querySelectorAll('.vespera-top-entry').length, 1);
     entry.destroy();
 });
 

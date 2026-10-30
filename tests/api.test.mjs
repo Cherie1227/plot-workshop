@@ -4,6 +4,26 @@ import { fetchModelList, testApiConnection, requestDiagnosis } from '../lib/api.
 
 const options = { getContext: () => ({ getRequestHeaders: () => ({ 'Content-Type': 'application/json', 'X-CSRF-Token': 'fixture' }) }), baseUrl: 'https://example.invalid/v1/chat/completions', apiKey: 'private-test-key', model: 'fixture-model' };
 const ok = data => ({ ok: true, json: async () => data });
+const streamed = content => new Response([
+    { choices: [{ index: 0, delta: { role: 'assistant', content: content.slice(0, 5) }, finish_reason: null }] },
+    { choices: [{ index: 0, delta: { content: content.slice(5) }, finish_reason: null }] },
+    { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
+].map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n', { headers: { 'Content-Type': 'text/event-stream' } });
+
+test('connection test and diagnosis both use selected stream mode and parse incremental replies', async () => {
+    const sent = [];
+    const diagnosis = { summary: '当前回应自然。', options: [] };
+    const fetchImpl = async (_url, init) => {
+        const body = JSON.parse(init.body); sent.push(body);
+        return streamed(body.messages.length === 1 ? 'OK' : JSON.stringify(diagnosis));
+    };
+    assert.match((await testApiConnection({ ...options, stream: true, fetchImpl })).message, /连接成功/);
+    assert.deepEqual(await requestDiagnosis({ ...options, stream: true, fetchImpl, messages: [{ role: 'user', content: '资料' }] }), diagnosis);
+    assert.equal(sent.every(body => body.stream === true), true);
+    await testApiConnection({ ...options, stream: false, fetchImpl: async (_url, init) => {
+        assert.equal(JSON.parse(init.body).stream, false); return ok({ choices: [{ message: { content: 'OK' }, finish_reason: 'stop' }] });
+    } });
+});
 test('models use ST proxy and independent credentials; IDs deduplicated', async () => {
     let sent;
     const models = await fetchModelList({ ...options, fetchImpl: async (url, init) => { sent = { url, ...init, body: JSON.parse(init.body) }; return ok({ data: [{ id: 'b' }, { id: 'a' }, { id: 'b' }, {}] }); } });

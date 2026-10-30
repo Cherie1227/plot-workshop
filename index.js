@@ -18,12 +18,12 @@ import { cleanSettings, proseTarget, assertChat, storySnapshot, collectPlanningC
 const STORE = 'plot_workshop';
 const base = new URL('./', import.meta.url);
 const normalType = type => !type || type === 'normal';
-const API_FIELDS = ['baseUrl', 'model', 'temperature', 'maxTokens'];
-const connectionSettings = input => Object.fromEntries(API_FIELDS.map(key => [key, String(input?.[key] ?? '')]));
+const API_FIELDS = ['baseUrl', 'model', 'temperature', 'maxTokens', 'stream'];
+const connectionSettings = input => Object.fromEntries(API_FIELDS.map(key => [key, key === 'stream' ? input?.stream !== false : String(input?.[key] ?? '')]));
 const newId = prefix => `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 const keyStorageName = id => `${STORE}:api-key:${id}`;
 const bookNames = input => Array.isArray(input) ? [...new Set(input.filter(name => typeof name === 'string' && name.trim() && name.length <= 500))] : [];
-const planningSettings = settings => Object.fromEntries(Object.entries(settings).filter(([key]) => !['theme', 'fontSize', 'lineHeight'].includes(key)));
+const planningSettings = settings => Object.fromEntries(Object.entries(settings).filter(([key]) => !['theme', 'fontSize', 'lineHeight', 'enabled', 'regeneratePolicy'].includes(key)));
 const errorCode = error => typeof error?.code === 'string' && /^[A-Z0-9_]{1,64}$/.test(error.code) ? error.code : 'UNKNOWN';
 
 function readPlanningPreset(input, options) {
@@ -97,6 +97,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     state.logs = runtimeLog.entries;
     let workId = 0, controller = null, gate = null, anchor = null, memory = null;
     let generationToken, preparationError, resuming = null, writerActive = false, disposeReuse = null, worldRevision = 0;
+    let nativeRegeneration = null;
     let undoDeletionRecord = null, promptSequence = 0;
     let apiController = null, apiWorkId = 0;
     let detectionWorkId = 0;
@@ -134,7 +135,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     state.update = updater.state;
     const hostInput = () => document.querySelector('#send_textarea');
     const draft = () => String(hostInput()?.value ?? '');
-    const configSignature = () => JSON.stringify({ settings: planningSettings(state.settings), preset: state.preset, apiProfileId: state.activeApiProfileId, extraWorldbooks: state.extraWorldbooks,
+    const configSignature = (outlineOnly = false) => JSON.stringify({ settings: Object.fromEntries(Object.entries(planningSettings(state.settings)).filter(([key]) => !outlineOnly || !['autoOnSend', 'mode'].includes(key))), preset: state.preset, apiProfileId: state.activeApiProfileId, extraWorldbooks: state.extraWorldbooks,
         presetId: state.activePresetId, animaPath: state.animaDetectedPath || state.settings.animaPath });
     const animaConfigSignature = () => JSON.stringify(getContext().extensionSettings.anima_memory_system ?? null);
     const settingsForAnima = inputAlreadyInChat => ({ frontendPath: state.animaDetectedPath || state.settings.animaPath, inputAlreadyInChat });
@@ -186,6 +187,27 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         current.saveSettingsDebounced();
         log('info', 'configuration.saved', '配置已保存。', { promptCount: state.preset.prompts.length, mode: state.settings.mode });
     }
+    function setEnabled(value) {
+        if (typeof value !== 'boolean') throw new Error('插件开关必须为开启或关闭。');
+        const current = getContext();
+        if (state.busy || state.apiBusy || state.animaChecking || state.libraryBusy || hostGenerating
+            || anima.isAnimaMemoryOperationInFlight?.()
+            || (typeof current.isGenerating === 'function' ? current.isGenerating() : current.isGenerating)) {
+            throw new Error('请先完成或取消当前操作，再切换插件总开关。');
+        }
+        if (!value) {
+            anima.releaseAnimaObserver?.();
+            disposeReuse?.(); disposeReuse = null; resuming = null;
+            generationToken = undefined; preparationError = null;
+            nativeRegeneration = null;
+            clearInjection(current);
+        }
+        state.settings.enabled = value;
+        persist();
+        log('info', 'extension.enabled', value ? 'Vespera 已启用。' : 'Vespera 已关闭，聊天由酒馆直接生成。', { enabled: value });
+        status(value ? 'Vespera 已启用，开关已保存。' : 'Vespera 已关闭，开关已保存；聊天由酒馆直接生成。');
+        return true;
+    }
     function refreshHostCatalog() {
         state.libraryBusy = true; render();
         try {
@@ -234,7 +256,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         if (payload.rememberKey === false) saveProfileSecret(old.id, typeof payload.apiKey === 'string' ? payload.apiKey : state.apiKey, false);
         const name = named(payload.name ?? payload.profileName, asNew ? `${old.name} 副本` : old.name, 'API 方案');
         const oldAnimaPath = state.settings.animaPath;
-        const settings = cleanSettings({ ...state.settings, ...payload.settings });
+        const settings = cleanSettings({ ...state.settings, ...payload.settings, enabled: state.settings.enabled });
         proseTarget(settings);
         if (settings.baseUrl.trim()) normalizeEndpoint(settings.baseUrl);
         const key = payload.apiKey === undefined ? state.apiKey : payload.apiKey;
@@ -344,7 +366,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         if (type === 'fetchModels') state.models = [];
         log('info', type === 'fetchModels' ? 'api.models.started' : 'api.test.started', type === 'fetchModels' ? '开始获取 API 模型列表。' : '开始测试 API 连接。', { model: settings.model }); render();
         try {
-            const options = { getContext, fetchImpl, baseUrl: settings.baseUrl, model: settings.model, apiKey, signal, timeoutMs: 60000 };
+            const options = { getContext, fetchImpl, baseUrl: settings.baseUrl, model: settings.model, stream: settings.stream, apiKey, signal, timeoutMs: 60000 };
             const result = await (type === 'fetchModels' ? api.fetchModelList(options) : api.testApiConnection(options));
             if (id !== apiWorkId || signal.aborted) return false;
             if (type === 'fetchModels') {
@@ -443,7 +465,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             state.stage = 'planning'; status('正在诊断本轮剧情…');
             log('info', 'diagnosis.started', '用户主动请求剧情诊断。');
             const result = await (api.requestDiagnosis || requestDiagnosis)({ getContext, fetchImpl, baseUrl: state.settings.baseUrl,
-                model: state.settings.model, apiKey: state.apiKey, messages, signal, timeoutMs: 180000 });
+                model: state.settings.model, stream: state.settings.stream, apiKey: state.apiKey, messages, signal, timeoutMs: 180000 });
             if (signal.aborted || !snapshotCurrent(expected)) throw new Error('诊断期间输入或上下文已变化，请重新诊断。');
             state.diagnosis = result; diagnosisAnchor = { snapshot: expected, xml: state.plan?.xml || '' };
             log('success', 'diagnosis.completed', '剧情诊断已完成，等待用户选择。');
@@ -460,6 +482,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     }
     function importBackup(text) {
         const data = sanitizeBackup(text);
+        if (!data.settings.enabled) anima.releaseAnimaObserver?.();
         // Validate the whole file before changing anything; imported profiles are new copies.
         const profiles = data.apiProfiles.map(profile => ({ ...profile, id: newId('api') }));
         const presets = data.presetLibrary.map(entry => ({ ...entry, id: newId('preset') }));
@@ -481,6 +504,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     function cancel(message = '已取消；大纲没有写入聊天。') {
         if (writerReplay) writerReplay.failed = true;
         pendingWriterReceipt = null;
+        nativeRegeneration = null;
         log('info', 'operation.cancelled', '当前操作已取消，临时注入已清理。', { stage: state.stage });
         detectionWorkId++;
         if (state.animaChecking) state.animaStatus = '已取消 Anima 检测。';
@@ -512,13 +536,15 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             injection: { position: state.settings.injectionPosition, depth: state.settings.injectionDepth, role: state.settings.injectionRole } };
         const current = getContext();
         pendingWriterReceipt = { prefix: storySnapshot(current), targetId: current.chat.length,
-            chatId: current.chatId, content, animaConfig: animaConfigSignature() };
+            chatId: current.chatId, content, animaConfig: animaConfigSignature(), worldRevision,
+            animaPath: state.animaDetectedPath || state.settings.animaPath,
+            input: state.input, plan: structuredClone(state.plan), memory: structuredClone(memory), outlineConfig: configSignature(true) };
         injectForTurn(current, { ...content,
             valid: () => !!writerActive && anchor === fixedAnchor && getContext().chatId === fixedAnchor.chatId });
         log('info', 'writer.injected', describeInjection(state.settings), { position: state.settings.injectionPosition, depth: Number(state.settings.injectionDepth), role: state.settings.injectionRole });
         writerActive = true;
     }
-    async function performPlan(userInput, { committed = false, token, maxContext, inspectOnly = false, versionLabel = '生成大纲' } = {}) {
+    async function performPlan(userInput, { committed = false, token, maxContext, inspectOnly = false, versionLabel = '生成大纲', recalledMemory = null, generationType = 'normal' } = {}) {
         if (!userInput.trim()) throw new Error('请先填写本轮输入。');
         if (!inspectOnly) {
             normalizeEndpoint(state.settings.baseUrl);
@@ -544,7 +570,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         log('info', 'anima.recall.started', '开始读取本轮 Anima 记忆。');
         // The Anima adapter shares a completed recall only within this exact story/input round.
         const baseStory = storySnapshot(getContext(), committed ? { dropLastInput: userInput } : {});
-        memory = await anima.recallAnima({ context: getContext(), userInput, signal,
+        memory = recalledMemory ? { ...structuredClone(recalledMemory), reusedForRound: true } : await anima.recallAnima({ context: getContext(), userInput, signal,
                 settings: settingsForAnima(committed), generationToken: token,
                 onStatus: message => { if (id === workId) { state.animaStatus = message; render(); } } });
         check();
@@ -579,7 +605,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         state.stage = 'planning'; status('规划模型正在生成本轮大纲…');
         log('info', 'planner.request.started', '开始请求本轮大纲。', { model: state.settings.model, messageCount: compiled.messages.length });
         const result = await requestPlan({ baseUrl: state.settings.baseUrl, model: state.settings.model, apiKey: state.apiKey,
-            messages: compiled.messages, signal, timeoutMs: 180000,
+            messages: compiled.messages, signal, timeoutMs: 180000, stream: state.settings.stream,
             ...(state.settings.temperature !== '' ? { temperature: Number(state.settings.temperature) } : {}),
             ...(state.settings.maxTokens !== '' ? { maxTokens: Number(state.settings.maxTokens) } : {}),
             transport: createSTTransport(getContext, fetchImpl), DOMParser: globalThis.DOMParser });
@@ -589,7 +615,8 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         state.planningAnalysis = analysis ? { ...analysis, edited: false } : { reasoning: '', supplement: '', truncated: false, edited: false };
         log('success', 'planner.request.completed', '本轮大纲已生成并通过格式校验。');
         anchor = { story: initialStory, baseStory, config: initialConfig, draft: initialDraft,
-            input: userInput, committed, chatId: getContext().chatId, worldRevision, animaConfig: planningAnimaConfig };
+            input: userInput, committed, chatId: getContext().chatId, worldRevision, animaConfig: planningAnimaConfig,
+            outlineConfig: configSignature(true), animaPath: state.animaDetectedPath || state.settings.animaPath, generationType };
         recordVersion(versionLabel); refreshPromptPreview();
         state.stage = 'review'; status('本轮大纲已生成，可以编辑、复制或确认扩写。');
         return result;
@@ -617,13 +644,16 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         if (!hostInput()) throw new Error('没有找到酒馆输入框。');
         resuming = { plan: state.plan, started: false };
         state.busy = true;
-        disposeReuse = anima.skipNextAnimaRecall({ matches: sameResumingStory });
-        hostInput().value = anchor.committed ? '' : state.input;
-        hostInput().dispatchEvent(new Event('input', { bubbles: true }));
+        const generationType = anchor.generationType === 'regenerate' ? 'regenerate' : 'normal';
+        if (generationType !== 'regenerate') {
+            disposeReuse = anima.skipNextAnimaRecall({ matches: sameResumingStory });
+            hostInput().value = anchor.committed ? '' : state.input;
+            hostInput().dispatchEvent(new Event('input', { bubbles: true }));
+        }
         state.stage = 'writing'; status('已确认，正在调用酒馆主模型扩写…');
         log('info', 'writer.request.started', '已确认大纲，开始调用酒馆主模型扩写。');
         view.close();
-        try { await current.generate('normal'); }
+        try { await current.generate(generationType); }
         finally {
             disposeReuse?.(); disposeReuse = null; resuming = null; writerActive = false;
             pendingWriterReceipt = null;
@@ -641,7 +671,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         } catch { return false; }
     }
     function canRewrite() {
-        return typeof rewriteReply === 'function' && !state.busy && !state.apiBusy && !state.animaChecking
+        return state.settings.enabled && typeof rewriteReply === 'function' && !state.busy && !state.apiBusy && !state.animaChecking
             && !state.libraryBusy && !hostGenerating && state.update.phase !== 'installing' && receiptCurrent();
     }
     async function rerollWriter() {
@@ -680,7 +710,51 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             render();
         }
     }
+    function captureRegeneration() {
+        const current = getContext();
+        assertChat(current);
+        // ST removes the last assistant reply after GENERATION_STARTED and
+        // before interceptors. Its unsent composer text remains untouched.
+        const history = [...current.chat];
+        if (history.length && !history.at(-1).is_user) history.pop();
+        const last = history.at(-1);
+        if (!last?.is_user || !String(last.mes || '').trim()) throw new Error('没有找到这轮对应的用户输入，暂不能重新规划。');
+        const input = String(last.mes), context = { ...current, chat: history };
+        const prefix = storySnapshot(context), baseStory = storySnapshot(context, { dropLastInput: input });
+        const animaConfig = animaConfigSignature(), animaPath = state.animaDetectedPath || state.settings.animaPath;
+        const candidates = [];
+        if (anchor && state.plan && memory && anchor.chatId === current.chatId && anchor.baseStory === baseStory && anchor.input === input) {
+            candidates.push({ ...anchor, plan: state.plan, memory });
+        }
+        if (receiptCurrent() && writerReceipt.prefix === prefix && writerReceipt.input === input) candidates.push(writerReceipt);
+        const source = candidates.find(item => item.worldRevision === worldRevision && item.animaConfig === animaConfig && item.animaPath === animaPath);
+        return { input, prefix, worldRevision, animaConfig, animaPath,
+            memory: source ? structuredClone(source.memory) : null,
+            plan: source?.outlineConfig === configSignature(true) ? structuredClone(source.plan) : null,
+            outlineConfig: configSignature(true) };
+    }
+    function currentRegeneration() {
+        const saved = nativeRegeneration;
+        if (!saved || saved.prefix !== storySnapshot(getContext())) throw new Error('重新生成时聊天已改变，请在当前聊天重试。');
+        const memoryValid = saved.worldRevision === worldRevision && saved.animaConfig === animaConfigSignature()
+            && saved.animaPath === (state.animaDetectedPath || state.settings.animaPath);
+        return { ...saved, memory: memoryValid ? saved.memory : null,
+            plan: memoryValid && saved.outlineConfig === configSignature(true) ? saved.plan : null };
+    }
+    function reuseRegenerationPlan(saved) {
+        const current = getContext();
+        state.input = saved.input; state.plan = structuredClone(saved.plan); state.rawPlan = state.plan.xml;
+        state.planningAnalysis = null; memory = { ...structuredClone(saved.memory), reusedForRound: true };
+        anchor = { story: saved.prefix, baseStory: storySnapshot(current, { dropLastInput: saved.input }),
+            config: configSignature(), outlineConfig: configSignature(true), draft: draft(), input: saved.input,
+            committed: true, chatId: current.chatId, worldRevision, animaConfig: saved.animaConfig,
+            animaPath: saved.animaPath, generationType: 'regenerate' };
+        state.busy = true; state.stage = 'review'; refreshPromptPreview();
+        log('success', 'planner.reused', '酒馆重新生成沿用本轮有效大纲与记忆，未请求规划模型。');
+        status('已沿用本轮大纲。');
+    }
     async function intercept(chat, maxContext, abort, type) {
+        if (!state.settings.enabled) return;
         if (state.update.phase === 'installing') { abort(true); status('Vespera正在更新，请完成后再生成。'); return; }
         if (preparationError?.code === 'CANCELLED') { preparationError = null; abort(true); clearInjection(getContext()); return; }
         if (writerReplay) {
@@ -700,13 +774,18 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             return;
         }
         if (!state.settings.autoOnSend || type === 'quiet' || type === 'impersonate') return;
-        if (!normalType(type)) { abort(true); fail(new Error('首版自动规划支持普通发送。续写、重生成或滑动分支请先关闭“发送时自动规划”。')); return; }
+        if (!normalType(type) && type !== 'regenerate') { abort(true); fail(new Error('自动规划支持普通发送和酒馆重新生成。续写或滑动分支请先关闭“发送时自动规划”。')); return; }
         if (state.busy || state.apiBusy || state.animaChecking) { abort(true); fail(new Error('已有规划、API 操作或 Anima 检测正在进行，请先完成或取消。')); return; }
         try {
             if (preparationError) throw preparationError;
             const last = getContext().chat.at(-1);
             if (!last?.is_user) throw new Error('本轮没有新的用户输入，未执行自动规划。');
-            await performPlan(String(last.mes), { committed: true, token: generationToken, maxContext });
+            if (type === 'regenerate') {
+                const saved = currentRegeneration();
+                if (state.settings.regeneratePolicy === 'reuse' && saved.plan && saved.memory) reuseRegenerationPlan(saved);
+                else await performPlan(String(last.mes), { committed: true, maxContext, recalledMemory: saved.memory,
+                    generationType: 'regenerate', versionLabel: '酒馆重新生成大纲' });
+            } else await performPlan(String(last.mes), { committed: true, token: generationToken, maxContext });
             if (state.settings.mode === 'manual') { abort(true); view.open(); return; }
             if (state.settings.mode === 'review') await awaitApproval();
             checkAnchor(); writerActive = true; inject();
@@ -732,6 +811,10 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
                 reloadPage(); return;
             }
             if (state.update.phase === 'installing' && !['copyLogs', 'exportLogs', 'clearLogs'].includes(type)) throw new Error('扩展正在更新，请稍后再操作。');
+            if (type === 'setEnabled') return setEnabled(payload.value);
+            if (!state.settings.enabled && ['generate', 'rerollPlan', 'confirmAndWrite', 'rerollWriter', 'inspectPrompts', 'diagnose'].includes(type)) {
+                throw new Error('Vespera 已关闭，请先打开顶部总开关。');
+            }
             if (type === 'rerollWriter') return await rerollWriter();
             const editable = ['settings', 'apiKey', 'importPreset', 'selectPreset', 'createPrompt', 'editPrompt', 'duplicatePrompt', 'movePrompt', 'deletePrompt', 'undoDeletePrompt', 'promptToggle', 'groupToggle', 'input',
                 'apiProfileSelect', 'apiProfileNew', 'apiProfileSave', 'apiProfileSaveAs', 'apiProfileDelete', 'saveSettings', 'fetchModels', 'testApi',
@@ -792,7 +875,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             }
             if (type === 'settings') {
                 const oldPath = state.settings.animaPath;
-                state.settings = cleanSettings({ ...state.settings, ...payload }); persist(); render();
+                state.settings = cleanSettings({ ...state.settings, ...payload, enabled: state.settings.enabled }); persist(); render();
                 if (state.settings.animaPath !== oldPath) { resetDetection(); await detectAnima(); }
                 return;
             }
@@ -1018,8 +1101,20 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
                     const preparationId = ++workId;
                     await anima.installAnimaObserver({ settings: settingsForAnima(false) });
                     if (preparationId !== workId) throw Object.assign(new Error('操作已取消。'), { code: 'CANCELLED' });
-                    const committed = !draft() && getContext().chat.at(-1)?.is_user && getContext().chat.at(-1).mes === payload.input;
-                    await performPlan(String(payload.input ?? state.input), { committed, versionLabel: reroll ? '重生成大纲' : '生成大纲' });
+                    const userInput = String(payload.input ?? state.input), current = getContext();
+                    const regenerate = reroll && anchor?.generationType === 'regenerate' && anchor.input === userInput;
+                    if (regenerate && (anchor.chatId !== current.chatId || anchor.story !== storySnapshot(current)
+                        || !current.chat.at(-1)?.is_user || current.chat.at(-1).mes !== userInput)) {
+                        throw new Error('这轮重新生成的聊天已改变，请从酒馆重新生成，避免重复发送上一轮输入。');
+                    }
+                    // A new preset or prose target needs a new outline, but does
+                    // not turn an already submitted input into a new chat message.
+                    const reuseMemory = regenerate && anchor.worldRevision === worldRevision
+                        && anchor.animaConfig === animaConfigSignature()
+                        && anchor.animaPath === (state.animaDetectedPath || state.settings.animaPath);
+                    const committed = regenerate || (!draft() && current.chat.at(-1)?.is_user && current.chat.at(-1).mes === userInput);
+                    await performPlan(userInput, { committed, versionLabel: reroll ? '重生成大纲' : '生成大纲',
+                        generationType: regenerate ? 'regenerate' : 'normal', recalledMemory: reuseMemory ? memory : null });
                     planned = true;
                     state.busy = false; render();
                     if (state.settings.mode === 'auto') await confirmAndWrite();
@@ -1059,6 +1154,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     }
     listen('GENERATION_STARTED', async (type, _options, dryRun) => {
         if (!dryRun) hostGenerating = true;
+        if (!state.settings.enabled) return;
         if (!dryRun && writerReplay) {
             if (type !== 'swipe' || writerReplay.started || !receiptCurrent(writerReplay.receipt)) {
                 writerReplay.failed = true;
@@ -1071,10 +1167,13 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         if (dryRun || (!state.settings.autoOnSend && !resuming) || type === 'quiet' || type === 'impersonate') return;
         clearInjection(getContext()); preparationError = null;
         try {
+            nativeRegeneration = type === 'regenerate' && !resuming ? captureRegeneration() : null;
             const preparationId = workId;
             await anima.installAnimaObserver({ settings: settingsForAnima(true) });
             if (preparationId !== workId) throw Object.assign(new Error('操作已取消。'), { code: 'CANCELLED' });
-            generationToken = anima.beginAnimaGeneration();
+            // Reviewed Anima ignores native regenerate. Read through the direct
+            // path after ST has removed the old reply, or reuse this turn's snapshot.
+            generationToken = type === 'regenerate' ? undefined : anima.beginAnimaGeneration();
             if (resuming) resuming.started = true;
         } catch (e) { preparationError = e; }
     });
@@ -1096,6 +1195,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             if (last && !last.is_user && !last.is_system && String(last.mes || '').trim()) anima.invalidateAnimaRoundCache?.();
         }
         pendingWriterReceipt = null; writerActive = false; clearInjection(getContext());
+        nativeRegeneration = null;
         if (!gate) state.busy = false;
         anima.clearAnimaGeneration(generationToken); render();
     });
@@ -1118,7 +1218,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         async open() {
             if (!state.busy && !state.plan) state.input = draft() || (getContext().chat?.at(-1)?.is_user ? getContext().chat.at(-1).mes : '');
             view.open(); render();
-            if (!state.busy && !state.apiBusy && !state.animaChecking) await detectAnima();
+            if (state.settings.enabled && !state.busy && !state.apiBusy && !state.animaChecking) await detectAnima();
             if (!state.busy && !state.apiBusy && !state.animaChecking && typeof getContext().getWorldInfoNames === 'function') refreshHostCatalog();
         },
         destroy() { destroyed = true; quickActions?.destroy(); entryPoints?.destroy(); writerReceipt = null; state.planningAnalysis = null; updater.destroy(); cancel(); for (const [event, fn] of listeners) ctx.eventSource.removeListener(event, fn); view.destroy(); state.apiKey = ''; secretCache.clear(); },

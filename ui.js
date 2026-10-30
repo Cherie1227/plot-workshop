@@ -25,6 +25,7 @@ const ICONS = {
     corner: '<path d="M2 22V12C2 5 5 2 12 2h10M6 18c0-7 4-12 12-12M4 12c3 1 5-1 4-4M12 4c1 3-1 5-4 4"/>',
     flourish: '<path d="M1 8h21m36 0h21M22 8c8-7 13-7 18 0-5 7-10 7-18 0m18 0c5-7 10-7 18 0-8 7-13 7-18 0M40 2v12"/>',
     check: '<path d="m5 12 4 4L19 6"/>',
+    power: '<path d="M12 2v10M6.4 5.4a9 9 0 1 0 11.2 0"/>',
 };
 
 function el(tag, className, text) {
@@ -206,9 +207,12 @@ export function createWorkbench({ getState, onAction }) {
     themeSelect.addEventListener('change', updateAppearanceDraft);
     const closeButton = button('关闭', close, { className: 'pw-close', iconName: 'close' });
     closeButton.setAttribute('aria-label', '关闭');
+    const enableButton = button('已启用', () => act('setEnabled', { value: getState().settings?.enabled === false }), { className: 'pw-enable-toggle', iconName: 'power' });
+    enableButton.setAttribute('role', 'switch');
+    enableButton.setAttribute('aria-label', 'Vespera 总开关');
     const headerArt = el('img', 'pw-header-art'); headerArt.alt = ''; headerArt.src = new URL('./assets/celestial-header.png', import.meta.url).href;
     headerArt.setAttribute('aria-hidden', 'true');
-    header.append(headerArt, brand, closeButton);
+    header.append(headerArt, brand, enableButton, closeButton);
     shell.append(header, pageNav);
     const updateBanner = button('', () => withUnsavedGuard(() => {
         resetEditor(); activeTab = 'settings'; updateSection.open = true; renderTabs(); updateSection.scrollIntoView({ block: 'start' });
@@ -686,7 +690,13 @@ export function createWorkbench({ getState, onAction }) {
     advanced.append(el('summary', '', '生成参数'));
     const advancedFields = el('div', 'pw-advanced-fields');
     settingInput(advancedFields, 'temperature', '温度', 'number', '使用默认值', undefined, { step: '0.1', min: '0', max: '2', inputMode: 'decimal' });
-    settingInput(advancedFields, 'maxTokens', '最大输出 Token', 'number', '使用默认值', undefined, { step: '1', min: '1', inputMode: 'numeric' });
+    settingInput(advancedFields, 'maxTokens', '最大输出 Token', 'number', '留空由接口决定', undefined, { step: '1', min: '1', inputMode: 'numeric' });
+    const streamLabel = el('label', 'pw-checkbox-label pw-stream-field');
+    const streamInput = control('checkbox'); streamInput.setAttribute('aria-label', '流式接收');
+    streamInput.addEventListener('change', () => { configDrafts.set('stream', streamInput.checked); settingsSaveStatus.textContent = '流式设置已修改，请保存方案或保存设置。'; });
+    decorateCheckbox(streamLabel, streamInput, el('span', '', '流式接收'));
+    settingsFields.stream = streamInput;
+    advancedFields.append(streamLabel, el('p', 'pw-hint pw-stream-field', '跟随此 API 方案；完整接收并校验后才注入。输出上限留空时由接口决定。'));
     advanced.append(advancedFields);
     apiSection.append(advanced);
     const lengthSection = settingsSection('正文篇幅');
@@ -708,6 +718,8 @@ export function createWorkbench({ getState, onAction }) {
     const modeHint = el('p', 'pw-hint');
     const modeField = field('规划时机', modeSelect); modeField.classList.add('pw-mode-field');
     modeSection.append(modeField, autoLabel, modeHint);
+    settingSelect(modeSection, 'regeneratePolicy', '酒馆重新生成', [['refresh', '每次重新生成大纲'], ['reuse', '优先沿用大纲，没有则生成']]);
+    modeSection.append(el('p', 'pw-hint', '开启自动规划后生效；读取上一条用户输入，保留输入框草稿。'));
     const injectionSection = settingsSection('大纲注入');
     function settingSelect(section, key, label, options) {
         const node = el('select', 'pw-input'); node.setAttribute('aria-label', label);
@@ -939,7 +951,7 @@ export function createWorkbench({ getState, onAction }) {
     }
     function collectSettings() {
         const result = { ...getState().settings };
-        for (const [key, node] of Object.entries(settingsFields)) result[key] = node.type === 'number' ? (node.value === '' ? '' : Number(node.value)) : node.value;
+        for (const [key, node] of Object.entries(settingsFields)) result[key] = node.type === 'checkbox' ? node.checked : node.type === 'number' ? (node.value === '' ? '' : Number(node.value)) : node.value;
         result.mode = modeSelect.value;
         result.autoOnSend = autoOnSend.checked;
         return result;
@@ -1004,14 +1016,14 @@ export function createWorkbench({ getState, onAction }) {
         const profile = state.apiProfiles?.find(p => p.id === state.activeApiProfileId);
         if (!profile) return false;
         const draft = apiPayload();
-        const changed = ['baseUrl', 'model', 'temperature', 'maxTokens'].some(key => String(draft.settings[key] ?? '') !== String(profile[key] ?? ''));
+        const changed = ['baseUrl', 'model', 'temperature', 'maxTokens', 'stream'].some(key => String(draft.settings[key] ?? '') !== String(profile[key] ?? ''));
         return changed || draft.name !== profile.name || draft.apiKey !== apiKeyBaseline || draft.rememberKey !== rememberBaseline;
     }
     function hasUnsavedChanges() {
         const state = getState();
         if (groupDraftDirty() || dirtyPrompt || dirtyPlan || presetNameDirty || appearanceDirty || apiDirty()) return true;
         const settings = state.settings || {};
-        if (Object.entries(settingsFields).some(([key, node]) => node.value !== String(settings[key] ?? ''))) return true;
+        if (Object.entries(settingsFields).some(([key, node]) => node.type === 'checkbox' ? node.checked !== Boolean(settings[key]) : node.value !== String(settings[key] ?? ''))) return true;
         return modeSelect.value !== (settings.mode || 'review') || autoOnSend.checked !== Boolean(settings.autoOnSend)
             || keyField.value !== (state.apiKey || '');
     }
@@ -1031,7 +1043,7 @@ export function createWorkbench({ getState, onAction }) {
         apiUnsavedNotice.scrollIntoView({ block: 'nearest' });
     }
     function markApiSaved() {
-        for (const key of ['baseUrl', 'model', 'temperature', 'maxTokens']) configDrafts.delete(key);
+        for (const key of ['baseUrl', 'model', 'temperature', 'maxTokens', 'stream']) configDrafts.delete(key);
         keyDraftDirty = false;
         apiKeyBaseline = keyField.value; rememberBaseline = rememberKey.checked;
         apiUnsavedNotice.hidden = true; pendingApiChange = null;
@@ -1495,7 +1507,7 @@ export function createWorkbench({ getState, onAction }) {
         }
         apiProfileSelect.value = state.activeApiProfileId || '';
         if (seenApiProfileId !== state.activeApiProfileId || seenApiProfileId === undefined) {
-            for (const key of ['baseUrl', 'model', 'temperature', 'maxTokens']) configDrafts.delete(key);
+            for (const key of ['baseUrl', 'model', 'temperature', 'maxTokens', 'stream']) configDrafts.delete(key);
             keyDraftDirty = false;
             seenApiProfileId = state.activeApiProfileId || '';
             const profile = profiles.find(p => p.id === state.activeApiProfileId);
@@ -1613,11 +1625,11 @@ export function createWorkbench({ getState, onAction }) {
         const noPlan = !state.plan;
         const processing = Boolean((state.busy && !state.awaitingReview) || state.apiBusy || state.animaChecking || state.libraryBusy || state.update?.phase === 'installing');
         rerollButton.hidden = noPlan;
-        rerollButton.disabled = noPlan || isBlocked(state) || dirtyPlan;
+        rerollButton.disabled = state.settings?.enabled === false || noPlan || isBlocked(state) || dirtyPlan;
         rerollButton.title = dirtyPlan ? '请先应用大纲修改' : '';
         copyButton.disabled = noPlan || processing || dirtyPlan;
         fillButton.disabled = noPlan || processing || dirtyPlan;
-        writeButton.disabled = noPlan || processing || dirtyPlan;
+        writeButton.disabled = state.settings?.enabled === false || noPlan || processing || dirtyPlan;
         writeButton.hidden = state.settings?.mode === 'manual';
         applyPlanButton.disabled = processing || !planXml.value.trim();
         planXml.disabled = Boolean(processing);
@@ -1628,15 +1640,23 @@ export function createWorkbench({ getState, onAction }) {
         if (destroyed) return;
         const state = getState();
         const settings = state.settings || {};
+        const enabled = settings.enabled !== false;
+        enableButton.setAttribute('aria-checked', String(enabled));
+        enableButton.querySelector('span').textContent = enabled ? '已启用' : '已关闭';
+        enableButton.title = isBlocked(state) ? '请先完成或取消当前操作' : enabled ? '关闭 Vespera，立即保存' : '启用 Vespera，立即保存';
+        enableButton.disabled = isBlocked(state);
         renderAppearance();
         renderApiProfiles(state);
         setInputValue(input, state.input);
         if (!keyDraftDirty) setInputValue(keyField, state.apiKey);
-        for (const [key, node] of Object.entries(settingsFields)) if (!configDrafts.has(key)) setInputValue(node, settings[key]);
+        for (const [key, node] of Object.entries(settingsFields)) if (!configDrafts.has(key)) {
+            if (node.type === 'checkbox') node.checked = Boolean(settings[key]);
+            else setInputValue(node, settings[key]);
+        }
         if (!configDrafts.has('mode')) modeSelect.value = settings.mode || 'review';
         if (!configDrafts.has('autoOnSend')) autoOnSend.checked = Boolean(settings.autoOnSend);
         modeHint.textContent = settings.mode === 'auto' ? '大纲通过格式检查后直接交给主模型。' : settings.mode === 'manual' ? '只生成大纲，不自动注入主请求。' : '大纲生成后暂停，确认后再交给主模型。';
-        generateButton.disabled = isBlocked(state);
+        generateButton.disabled = !enabled || isBlocked(state);
         generateButton.querySelector('span').textContent = state.busy ? '正在处理…' : state.animaChecking ? '检测记忆扩展…' : state.preview ? '载入示例大纲' : '生成大纲';
         cancelButton.disabled = !state.busy;
         input.disabled = isBlocked(state);
@@ -1654,6 +1674,7 @@ export function createWorkbench({ getState, onAction }) {
         renderHostCatalog(state);
         renderImportReview(state);
         for (const node of presets.querySelectorAll('button,input,select,textarea')) node.disabled = isBlocked(state) || savingPrompt || groupSaving || node.dataset.disabled === 'true';
+        inspectButton.disabled = !enabled || isBlocked(state);
         for (const node of [...configPanel.querySelectorAll('button,input,select,textarea'), ...settingsPanel.querySelectorAll('button,input,select,textarea')]) node.disabled = isBlocked(state);
         for (const node of worldbooksPage.querySelectorAll('button,input,select,textarea')) node.disabled = isBlocked(state) || node.dataset.disabled === 'true';
         apiProfileDeleteButton.disabled = isBlocked(state) || (state.apiProfiles?.length || 0) <= 1;

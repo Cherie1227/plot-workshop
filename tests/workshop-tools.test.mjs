@@ -7,6 +7,20 @@ const xml = '<content><plot>他在门口等候。</plot><characters><character n
 const preset = () => ({ name: '规划', prompts: [{ identifier: 'one', name: '提示词', content: '只规划本轮。', role: 'system', enabled: false }], prompt_order: [{ character_id: 100001, order: [{ identifier: 'one', enabled: false }] }], extensions: { plot_workshop: { schema_version: 1, preserve_prompt_selection: true }, executable: { script: 'never execute', key: 'preset-secret' } } });
 const backup = () => ({ format: 'huapi-backup', version: 1, settings: {}, apiProfiles: [], presetLibrary: [], versions: [] });
 
+test('backup preserves stream mode per API and rejects non-boolean switches', () => {
+    const source = backup();
+    source.settings.stream = false;
+    source.apiProfiles = [{ id: 'one', name: '一', stream: false }, { id: 'two', name: '二', stream: true }];
+    const actual = sanitizeBackup(source);
+    assert.equal(actual.settings.stream, false);
+    assert.deepEqual(actual.apiProfiles.map(profile => profile.stream), [false, true]);
+    assert.equal(sanitizeBackup(backup()).settings.stream, true);
+    for (const stream of ['false', 0, null, {}]) {
+        assert.throws(() => sanitizeBackup({ ...source, settings: { stream } }), /布尔值/);
+        assert.throws(() => sanitizeBackup({ ...source, apiProfiles: [{ id: 'x', name: 'x', stream }] }), /布尔值/);
+    }
+});
+
 test('versions are unique, canonical and contain no surrounding analysis or extra state', () => {
     const first = makeVersion({ xml: `analysis before\n${xml}\nextra after`, input: '我回来了。', label: '第一版', rawMemory: 'secret memory' });
     const next = makeVersion({ xml, input: '我回来了。', label: '编辑版', parentId: first.id }, [first]);

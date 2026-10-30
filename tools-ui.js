@@ -81,7 +81,8 @@ export function createWorkshopTools({ getState, onAction }) {
 
     const diagnosisSection = section(outlineElement, '剧情诊断与备选方向');
     diagnosisSection.append(hint('手动诊断会额外调用规划 API。建议由你选择，采用后填入本轮输入，可继续修改再重新规划；不会自动发送、扩写或改变剧情。'));
-    diagnosisSection.append(button('诊断当前剧情', () => dispatch('diagnose')));
+    const diagnoseButton = button('诊断当前剧情', () => dispatch('diagnose'));
+    diagnosisSection.append(diagnoseButton);
     const diagnosisSummary = hint('尚未诊断。'), diagnosisOptions = node('div');
     diagnosisSection.append(diagnosisSummary, diagnosisOptions);
     listen(diagnosisOptions, 'click', event => {
@@ -115,6 +116,7 @@ export function createWorkshopTools({ getState, onAction }) {
     function updateDisabled() {
         const blocked = busy();
         for (const item of mutations) item.disabled = blocked;
+        diagnoseButton.disabled = blocked || getState().settings?.enabled === false;
         for (const item of diagnosisOptions.querySelectorAll('button')) item.disabled = blocked;
         restoreButton.disabled = blocked || !selectedVersion.value;
     }

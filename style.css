@@ -468,6 +468,11 @@
 .vespera-top-entry-button .vespera-top-entry-icon{display:block;width:24px;height:24px;pointer-events:none}
 .vespera-top-entry-button:focus-visible{outline:2px solid var(--SmartThemeQuoteColor,currentColor);outline-offset:-3px;border-radius:6px}
 .vespera-top-entry-button:hover{color:var(--SmartThemeQuoteColor,currentColor)}
+.pw-workbench .pw-enable-toggle{position:absolute;left:10px;top:6px;z-index:2;min-height:44px;padding:6px 7px;gap:5px;border:0;border-radius:12px;background:transparent;box-shadow:none;font-size:11px;line-height:1.4;color:var(--pw-accent)}
+.pw-workbench .pw-enable-toggle svg{width:15px;height:15px}
+.pw-workbench .pw-enable-toggle[aria-checked="false"]{color:var(--pw-muted);background:var(--pw-inactive)}
+.pw-workbench .pw-enable-toggle:not(:disabled):hover{background:var(--pw-accent-soft)}
+.pw-workbench .pw-advanced-fields>.pw-stream-field{grid-column:1 / -1}
 .pw-workbench .pw-plan-heading{flex-wrap:wrap}
 .pw-workbench .pw-plan-tabs{max-width:100%}
 .pw-workbench .pw-analysis-notice{margin-top:8px}

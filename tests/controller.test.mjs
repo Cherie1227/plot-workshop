@@ -97,7 +97,9 @@ async function fixture(t, { settings = {}, saved, fetchMode = 'success', api, de
     ctx.generate = async type => {
         let aborted = false;
         await events.emit('GENERATION_STARTED', type, {}, false);
-        if (input.value) { ctx.chat.push({ name: ctx.name1, is_user: true, mes: input.value }); input.value = ''; }
+        if (type === 'regenerate') {
+            if (ctx.chat.length && !ctx.chat.at(-1).is_user) { ctx.chat.pop(); await events.emit('MESSAGE_DELETED', ctx.chat.length); }
+        } else if (input.value) { ctx.chat.push({ name: ctx.name1, is_user: true, mes: input.value }); input.value = ''; }
         await plugin.intercept(ctx.chat, 32000, () => { aborted = true; calls.aborted++; }, type);
         if (!aborted) {
             const prompt = ctx.extensionPrompts[INJECTION_KEY];
@@ -292,6 +294,220 @@ test('group mutations cannot run while the planner is in flight', async t => {
     ]) assert.equal(await f.plugin.onAction(type, payload), false);
     assert.equal(JSON.stringify(f.plugin.state.preset), before);
     await f.plugin.onAction('cancel'); await planning;
+});
+
+test('master switch defaults on, saves immediately, and preserves configuration through reload and re-enable', async t => {
+    const f = await fixture(t, { settings: { autoOnSend: true, mode: 'auto' } });
+    assert.equal(f.plugin.state.settings.enabled, true);
+    const { id } = await f.plugin.onAction('presetSaveAs', { name: '保留的规划预设' });
+    await f.plugin.onAction('editPrompt', { id: 'outline_dialogue', content: '保持角色自己的说话方式。' });
+    const preset = structuredClone(f.plugin.state.preset), saves = f.calls.saves;
+    assert.equal(await f.plugin.onAction('setEnabled', { value: false }), true);
+    assert.equal(f.plugin.state.settings.enabled, false);
+    assert.equal(f.ctx.extensionSettings.plot_workshop.settings.enabled, false);
+    assert.ok(f.calls.saves > saves, 'Switching must save without a separate settings save');
+    await f.reload();
+    assert.equal(f.plugin.state.settings.enabled, false);
+    assert.equal(f.plugin.state.settings.autoOnSend, true);
+    assert.equal(f.plugin.state.settings.mode, 'auto');
+    assert.equal(f.plugin.state.activePresetId, id);
+    assert.deepEqual(structuredClone(f.plugin.state.preset), preset);
+    assert.equal(await f.plugin.onAction('setEnabled', { value: true }), true);
+    assert.equal(f.ctx.extensionSettings.plot_workshop.settings.enabled, true);
+    await f.ctx.generate('normal');
+    assert.equal(f.calls.recalled, 1);
+    assert.equal(f.calls.planner.length, 1);
+    assert.equal(f.calls.writer.length, 1);
+    assert.equal(f.calls.aborted, 0);
+    assert.equal(f.ctx.extensionPrompts[INJECTION_KEY], undefined);
+});
+
+test('disabled master switch blocks every planning and writing entry point without recalling or requesting models', async t => {
+    let diagnoses = 0;
+    const f = await fixture(t, { settings: { enabled: false, autoOnSend: true, mode: 'auto' }, api: {
+        async requestDiagnosis() { diagnoses++; return { summary: '诊断', options: [] }; },
+    } });
+    const chat = structuredClone(f.ctx.chat), input = f.input.value;
+    for (const action of ['generate', 'rerollPlan', 'confirmAndWrite', 'rerollWriter', 'inspectPrompts', 'diagnose']) {
+        assert.equal(await f.plugin.onAction(action, { input }), false, action);
+    }
+    assert.equal(f.plugin.canRewrite(), false);
+    assert.equal(f.calls.observers.length, 0);
+    assert.equal(f.calls.recalled, 0);
+    assert.equal(f.calls.planner.length, 0);
+    assert.equal(f.calls.writer.length, 0);
+    assert.equal(f.calls.replays.length, 0);
+    assert.equal(diagnoses, 0);
+    assert.deepEqual(f.ctx.chat, chat);
+    assert.equal(f.input.value, input);
+    assert.equal(f.ctx.extensionPrompts[INJECTION_KEY], undefined);
+});
+
+test('disabled master switch leaves all native generation types untouched and installs no Anima observer', async t => {
+    const f = await fixture(t, { settings: { enabled: false, autoOnSend: true, mode: 'auto' } });
+    const chat = structuredClone(f.ctx.chat), aborts = [];
+    for (const type of ['normal', 'swipe', 'regenerate', 'continue', 'quiet', 'impersonate', undefined]) {
+        await f.events.emit('GENERATION_STARTED', type, {}, false);
+        await f.plugin.intercept(f.ctx.chat, 32000, value => aborts.push({ type, value }), type);
+        assert.equal(f.ctx.extensionPrompts[INJECTION_KEY], undefined, String(type));
+        await f.events.emit('GENERATION_ENDED');
+    }
+    assert.deepEqual(aborts, []);
+    assert.equal(f.calls.observers.length, 0);
+    assert.equal(f.calls.recalled, 0);
+    assert.equal(f.calls.planner.length, 0);
+    assert.equal(f.calls.writer.length, 0);
+    assert.deepEqual(f.ctx.chat, chat);
+});
+
+test('disabling after a completed expansion also disables a previously valid fixed-outline rewrite', async t => {
+    const f = await fixture(t);
+    await f.plugin.onAction('generate', { input: f.input.value });
+    await f.plugin.onAction('confirmAndWrite');
+    assert.equal(f.plugin.canRewrite(), true);
+    const recalls = f.calls.recalled, observers = f.calls.observers.length, chat = structuredClone(f.ctx.chat);
+    assert.equal(await f.plugin.onAction('setEnabled', { value: false }), true);
+    assert.equal(f.plugin.canRewrite(), false);
+    assert.equal(await f.plugin.onAction('rerollWriter'), false);
+    assert.equal(await f.plugin.onAction('confirmAndWrite'), false);
+    assert.equal(f.calls.recalled, recalls);
+    assert.equal(f.calls.observers.length, observers);
+    assert.equal(f.calls.planner.length, 1);
+    assert.equal(f.calls.writer.length, 1);
+    assert.equal(f.calls.replays.length, 0);
+    assert.deepEqual(f.ctx.chat, chat);
+    assert.equal(f.ctx.extensionPrompts[INJECTION_KEY], undefined);
+});
+
+test('master switch refuses to change during an active planner request', async t => {
+    const f = await fixture(t, { fetchMode: 'pending' });
+    const planning = f.plugin.onAction('generate', { input: f.input.value });
+    await until(() => f.calls.planner.length === 1, 'pending planner request');
+    const saves = f.calls.saves;
+    try {
+        assert.equal(await f.plugin.onAction('setEnabled', { value: false }), false);
+        assert.equal(f.plugin.state.settings.enabled, true);
+        assert.equal(f.calls.saves, saves);
+        assert.equal(f.plugin.state.busy, true);
+    } finally { await f.plugin.onAction('cancel'); await planning; }
+    assert.equal(await f.plugin.onAction('setEnabled', { value: false }), true);
+    assert.equal(f.plugin.state.settings.enabled, false);
+});
+
+test('master switch refuses both directions during native generation and becomes available when it ends', async t => {
+    for (const enabled of [true, false]) {
+        await t.test(enabled ? 'turning off' : 'turning on', async t => {
+            const f = await fixture(t, { settings: { enabled, autoOnSend: false } });
+            await f.events.emit('GENERATION_STARTED', 'normal', {}, false);
+            const saves = f.calls.saves;
+            assert.equal(await f.plugin.onAction('setEnabled', { value: !enabled }), false);
+            assert.equal(f.plugin.state.settings.enabled, enabled);
+            assert.equal(f.calls.saves, saves);
+            assert.equal(f.calls.observers.length, 0);
+            await f.events.emit('GENERATION_ENDED');
+            assert.equal(await f.plugin.onAction('setEnabled', { value: !enabled }), true);
+            assert.equal(f.plugin.state.settings.enabled, !enabled);
+        });
+    }
+});
+
+test('native regenerate replans the prior input without consuming composer draft or another Echo recall', async t => {
+    const f = await fixture(t, { settings: { mode: 'auto', autoOnSend: true, regeneratePolicy: 'refresh' } });
+    await f.ctx.generate('normal');
+    f.input.value = '下一轮还没发送的草稿';
+    const oldXml = f.plugin.state.plan.xml;
+    await f.ctx.generate('regenerate');
+    assert.equal(f.calls.planner.length, 2); assert.equal(f.calls.writer.length, 2); assert.equal(f.calls.recalled, 1);
+    assert.equal(f.input.value, '下一轮还没发送的草稿'); assert.equal(f.ctx.chat.length, 3);
+    assert.equal(f.plugin.state.input, '她递出信。');
+    const body = JSON.stringify(f.calls.planner[1].body);
+    assert.match(body, /她递出信/); assert.doesNotMatch(body, /下一轮还没发送的草稿|林澄接过信，暂时没有拆开/);
+    assert.ok(f.calls.writer[1].prompt.includes(oldXml));
+    assert.equal(f.ctx.extensionPrompts[INJECTION_KEY], undefined);
+    assert.ok(f.plugin.state.logs.some(e => e.event === 'anima.recall.completed' && e.details.reused));
+});
+
+test('native regenerate reuse policy uses this turn outline and plans when there is none', async t => {
+    for (const hasPlan of [true, false]) await t.test(String(hasPlan), async subtest => {
+        const f = await fixture(subtest, { settings: { mode: 'auto', autoOnSend: true, regeneratePolicy: 'reuse' } });
+        if (hasPlan) await f.ctx.generate('normal');
+        else f.ctx.chat.push({ is_user: true, mes: '她递出信。' }, { is_user: false, mes: '未经过插件的旧回复' });
+        f.input.value = '保留草稿'; const before = f.calls.planner.length, recalls = f.calls.recalled;
+        await f.ctx.generate('regenerate');
+        assert.equal(f.calls.planner.length, before + (hasPlan ? 0 : 1));
+        assert.equal(f.calls.recalled, recalls + (hasPlan ? 0 : 1));
+        assert.equal(f.input.value, '保留草稿'); assert.equal(f.plugin.state.input, '她递出信。');
+        assert.equal(f.ctx.chat.length, 3); assert.equal(f.calls.writer.length, hasPlan ? 2 : 1);
+        if (!hasPlan) { assert.equal(f.calls.recalls[0].generationToken, undefined); assert.equal(f.calls.recalls[0].settings.inputAlreadyInChat, true); }
+    });
+});
+
+test('changed planning content requires a new outline but can reuse unchanged turn memory', async t => {
+    const f = await fixture(t, { settings: { mode: 'auto', autoOnSend: true, regeneratePolicy: 'reuse' } });
+    await f.ctx.generate('normal');
+    await f.plugin.onAction('settings', { minWords: '1800', maxWords: '2200' });
+    f.input.value = '草稿'; await f.ctx.generate('regenerate');
+    assert.equal(f.calls.planner.length, 2); assert.equal(f.calls.recalled, 1);
+    assert.match(f.calls.writer[1].prompt, /1800—2200/); assert.equal(f.input.value, '草稿');
+});
+
+test('changed worldbook requires new memory and a new outline for native regenerate', async t => {
+    const f = await fixture(t, { settings: { mode: 'auto', autoOnSend: true, regeneratePolicy: 'reuse' } });
+    await f.ctx.generate('normal'); await f.events.emit('WORLDINFO_UPDATED', 'book');
+    await f.ctx.generate('regenerate');
+    assert.equal(f.calls.planner.length, 2); assert.equal(f.calls.recalled, 2);
+    assert.equal(f.calls.recalls[1].generationToken, undefined);
+});
+
+test('native regenerate obeys review mode even when reusing an outline', async t => {
+    const f = await fixture(t, { settings: { mode: 'auto', autoOnSend: true, regeneratePolicy: 'reuse' } });
+    await f.ctx.generate('normal'); await f.plugin.onAction('settings', { mode: 'review' });
+    f.input.value = '不要发送的草稿'; const pending = f.ctx.generate('regenerate');
+    await until(() => f.plugin.state.awaitingReview, 'regeneration review');
+    assert.equal(f.calls.planner.length, 1); assert.equal(f.calls.writer.length, 1);
+    await f.plugin.onAction('confirmAndWrite'); await pending;
+    assert.equal(f.calls.writer.length, 2); assert.equal(f.input.value, '不要发送的草稿');
+});
+
+test('native regenerate manual mode stops at an outline and later confirmation preserves composer draft', async t => {
+    const f = await fixture(t, { settings: { mode: 'manual', autoOnSend: true } });
+    f.ctx.chat.push({ is_user: true, mes: '她递出信。' }, { is_user: false, mes: '旧正文' });
+    f.input.value = '下一轮草稿'; await f.ctx.generate('regenerate');
+    assert.equal(f.calls.planner.length, 1); assert.equal(f.calls.writer.length, 0); assert.equal(f.ctx.chat.length, 2);
+    assert.equal(f.input.value, '下一轮草稿');
+    await f.plugin.onAction('settings', { mode: 'review', regeneratePolicy: 'reuse' });
+    const pending = f.ctx.generate('regenerate'); await until(() => f.plugin.state.awaitingReview, 'review existing manual outline');
+    await f.plugin.onAction('cancel'); await pending;
+    assert.equal(f.calls.writer.length, 0); assert.equal(f.input.value, '下一轮草稿');
+    await f.plugin.onAction('confirmAndWrite');
+    assert.equal(f.calls.writer.length, 1); assert.equal(f.input.value, '下一轮草稿'); assert.equal(f.ctx.chat.length, 3);
+});
+
+test('rerolling a cancelled native-regeneration outline preserves its submitted input and composer draft after configuration changes', async t => {
+    const f = await fixture(t, { settings: { mode: 'review', autoOnSend: true } });
+    f.ctx.chat.push({ is_user: true, mes: '她递出信。' }, { is_user: false, mes: '旧正文' });
+    f.input.value = '下一轮尚未发送的草稿';
+    const pending = f.ctx.generate('regenerate');
+    await until(() => f.plugin.state.awaitingReview, 'regeneration review before reroll');
+    await f.plugin.onAction('cancel'); await pending;
+    await f.plugin.onAction('settings', { mode: 'auto', minWords: '1800', maxWords: '2200' });
+    await f.plugin.onAction('rerollPlan', { input: f.plugin.state.input });
+    assert.equal(f.calls.planner.length, 2);
+    assert.equal(f.calls.recalled, 1, 'Replanning the same turn must not advance Echo again');
+    assert.equal(f.calls.writer.length, 1);
+    assert.match(f.calls.writer[0].prompt, /1800—2200/);
+    assert.equal(f.input.value, '下一轮尚未发送的草稿');
+    assert.equal(f.ctx.chat.filter(message => message.is_user).length, 1);
+    assert.deepEqual(f.ctx.chat.map(message => message.mes), ['他站在门口。', '她递出信。', '林澄接过信，暂时没有拆开。']);
+    assert.equal(f.ctx.extensionPrompts[INJECTION_KEY], undefined);
+});
+
+test('native regenerate failure leaves no injection or draft changes and follows host reply removal', async t => {
+    const f = await fixture(t, { settings: { mode: 'auto', autoOnSend: true }, fetchMode: 'error' });
+    f.ctx.chat.push({ is_user: true, mes: '原用户输入' }, { is_user: false, mes: '将被酒馆移除的原回复' });
+    f.input.value = '未发送草稿'; await f.ctx.generate('regenerate');
+    assert.equal(f.calls.writer.length, 0); assert.equal(f.calls.aborted, 1); assert.equal(f.input.value, '未发送草稿');
+    assert.equal(f.ctx.chat.at(-1).mes, '原用户输入'); assert.equal(f.ctx.extensionPrompts[INJECTION_KEY], undefined);
 });
 
 test('manual planning then confirmation writes only final prose and clears this-turn injection', async t => {
@@ -786,6 +1002,29 @@ test('creating a prompt or switching a planning/API profile invalidates the curr
     await f.plugin.onAction('apiProfileSaveAs', { name: '同连接副本', apiKey: '', rememberKey: false });
     assert.equal(await f.plugin.onAction('confirmAndWrite'), false);
     assert.equal(f.calls.writer.length, 0);
+});
+
+test('stream mode defaults on, saves per profile and follows all completion actions', async t => {
+    const tested = [], diagnosed = [];
+    const f = await fixture(t, { settings: { mode: 'manual' }, api: {
+        async testApiConnection(options) { tested.push(options.stream); return { message: '成功' }; },
+        async requestDiagnosis(options) { diagnosed.push(options.stream); return { summary: '本轮顺畅。', options: [] }; },
+    } });
+    assert.equal(f.plugin.state.settings.stream, true);
+    const first = f.plugin.state.activeApiProfileId;
+    await f.plugin.onAction('apiProfileSave', { settings: { stream: false } });
+    const second = (await f.plugin.onAction('apiProfileSaveAs', { name: '流式', settings: { stream: true } })).id;
+    for (const [id, stream] of [[first, false], [second, true]]) {
+        await f.plugin.onAction('apiProfileSelect', { id });
+        await f.reload();
+        assert.equal(f.plugin.state.settings.stream, stream);
+        await f.plugin.onAction('testApi');
+        await f.plugin.onAction('generate', { input: f.input.value });
+        assert.equal(f.calls.planner.at(-1).body.stream, stream);
+        await f.plugin.onAction('diagnose');
+    }
+    assert.deepEqual(tested, [false, true]);
+    assert.deepEqual(diagnosed, [false, true]);
 });
 
 test('API profiles migrate old connection settings, save explicitly, and keep independent secrets in memory', async t => {
