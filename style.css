@@ -255,6 +255,19 @@
  @media(prefers-color-scheme:light){.pw-workbench[data-theme="system"]{--pw-bg:#f3f5f7;--pw-surface:#f8f9fa;--pw-card:#fbfcfd;--pw-inset:#eef1f4}}
  .pw-workbench[data-theme="host"]{--pw-bg:var(--SmartThemeBlurTintColor,#1a2026);--pw-surface:var(--SmartThemeChatTintColor,#252c32);--pw-card:var(--SmartThemeChatTintColor,#2b3238);--pw-inset:var(--SmartThemeBlurTintColor,#1c2228)}
 }
+
+/* The header, navigation and content share one glass sheet without horizontal seams. */
+.pw-workbench :is(.pw-header,.pw-page-nav){border-bottom:0;background:transparent;box-shadow:none}
+.pw-workbench .pw-header-art{
+ --pw-art-edges:linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent);
+ -webkit-mask-image:var(--pw-art-edges),linear-gradient(to bottom,#000 30%,rgba(0,0,0,.7) 52%,transparent calc(100% - 24px));
+ mask-image:var(--pw-art-edges),linear-gradient(to bottom,#000 30%,rgba(0,0,0,.7) 52%,transparent calc(100% - 24px));
+ -webkit-mask-composite:source-in;mask-composite:intersect;mask-repeat:no-repeat;
+}
+.pw-workbench .pw-body::before,.pw-workbench .pw-body::after{
+ -webkit-mask-image:linear-gradient(to bottom,transparent,#000 56px);mask-image:linear-gradient(to bottom,transparent,#000 56px);
+}
+@media(min-width:761px){.pw-workbench .pw-header-art{--pw-art-edges:linear-gradient(90deg,transparent 11%,#000 25%,#000 75%,transparent 89%)}}
 @media(min-width:761px){.pw-workbench .pw-header{height:90px;min-height:90px}.pw-workbench .pw-brand{padding-top:22px}.pw-workbench .pw-main{padding-top:34px}}
 @media(max-height:600px) and (max-width:760px){.pw-workbench .pw-header{height:56px;min-height:56px}.pw-workbench .pw-brand{padding-top:10px}}
 .pw-workbench .pw-row-token{font-size:var(--pw-meta-size)}
@@ -281,9 +294,6 @@
 .pw-workbench[data-theme="host"] :is(.pw-prompt-editor,.pw-xml-editor,.pw-user-input,.pw-inspection-text){background-color:var(--SmartThemeBlurTintColor,rgba(23,29,35,.76))}
 @media(min-width:761px){.pw-workbench .pw-body::before{top:138px}}
 @media(max-height:600px) and (max-width:760px){.pw-workbench .pw-body::before{top:100px}}
-/* Fade the opaque engraving canvas into the glass, including desktop side edges. */
-.pw-workbench .pw-header-art{mask-image:linear-gradient(90deg,transparent 0%,#000 14%,#000 86%,transparent 100%);-webkit-mask-image:linear-gradient(90deg,transparent 0%,#000 14%,#000 86%,transparent 100%)}
-@media(min-width:761px){.pw-workbench .pw-header-art{mask-image:linear-gradient(90deg,transparent 0%,transparent 11%,#000 25%,#000 75%,transparent 89%,transparent 100%);-webkit-mask-image:linear-gradient(90deg,transparent 0%,transparent 11%,#000 25%,#000 75%,transparent 89%,transparent 100%)}}
 
 /* Stronger frosted glass: avoid accumulating opaque fills through nested cards. */
 .pw-workbench{
