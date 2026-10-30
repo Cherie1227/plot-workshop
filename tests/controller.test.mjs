@@ -907,7 +907,7 @@ test('automatic send without Anima recall sources reaches main prose without pau
     assert.equal(f.ctx.extensionPrompts[INJECTION_KEY], undefined);
 });
 
-test('input and preset changes invalidate an already generated outline', async t => {
+test('input box changes invalidate an outline while preset changes no longer do', async t => {
     const { ctx, plugin, calls, input } = await fixture(t);
     await plugin.onAction('generate', { input: input.value });
     input.value = '修改后的输入';
@@ -917,8 +917,7 @@ test('input and preset changes invalidate an already generated outline', async t
     input.value = '她递出信。';
     await plugin.onAction('promptToggle', { identifier: 'outline_light_user', enabled: false });
     await plugin.onAction('confirmAndWrite');
-    assert.equal(calls.writer.length, 0);
-    assert.match(plugin.state.status, /预设.*变化/);
+    assert.equal(calls.writer.length, 1);
     assert.equal(ctx.extensionPrompts[INJECTION_KEY], undefined);
 });
 
@@ -1023,8 +1022,6 @@ test('recognizing a submitted input still rejects actual context changes with a 
         ['later identical input', f => { f.ctx.chat.push({ is_user: false, mes: '上一轮正文' }, { name: f.ctx.name1, is_user: true, mes: f.plugin.state.input }); }, 'DRAFT_CONTEXT_CHANGED'],
         ['worldbook', f => f.events.emit('WORLDINFO_UPDATED', 'book'), 'DRAFT_WORLDBOOK_CHANGED'],
         ['Anima settings', f => { f.ctx.extensionSettings.anima_memory_system = { rag: { imp_life: 7 } }; }, 'DRAFT_ANIMA_CHANGED'],
-        ['prose target', f => f.plugin.onAction('saveSettings', { settings: { storyPace: 'fast' } }), 'DRAFT_CONFIG_CHANGED'],
-        ['planning preset', f => f.plugin.onAction('promptToggle', { identifier: 'outline_light_user', enabled: false }), 'DRAFT_CONFIG_CHANGED'],
     ];
     for (const [name, change, code] of changes) await t.test(name, async subtest => {
         const f = await fixture(subtest);
@@ -1191,7 +1188,16 @@ test('changing Anima settings after planning prevents a stale-memory writer requ
     ctx.extensionSettings.anima_memory_system = { rag: { imp_life: 7 } };
     await plugin.onAction('confirmAndWrite');
     assert.equal(calls.writer.length, 0);
-    assert.match(plugin.state.status, /设置已变化/);
+    assert.match(plugin.state.status, /Anima 设置已变化/);
+});
+
+test('changing planning settings or preset after planning still allows confirm and write', async t => {
+    const { plugin, calls, input } = await fixture(t);
+    await plugin.onAction('generate', { input: input.value });
+    await plugin.onAction('settings', { model: 'planner-B', temperature: '0.9' });
+    await plugin.onAction('confirmAndWrite');
+    assert.equal(calls.writer.length, 1);
+    assert.ok(plugin.state.logs.some(entry => entry.message?.includes('规划预设或规划 API 设置已变化')));
 });
 
 test('abort during planner request does not inject a late or partial result', async t => {
@@ -1419,7 +1425,7 @@ test('copied and reordered entries retain their exact order through autosave, re
     assert.deepEqual(compiledPromptOrder(f.plugin.state.preset), compiled);
 });
 
-test('copying or reordering prompts invalidates the old outline and the next planner request uses the new order', async t => {
+test('copying or reordering prompts keeps the old outline writable and the next planner request uses the new order', async t => {
     for (const action of ['duplicatePrompt', 'movePrompt']) {
         await t.test(action, async subtest => {
             const f = await fixture(subtest, { saved: { preset: reorderPresetFixture(), settings: { baseUrl: 'https://relay.example/v1', model: 'planner-A', mode: 'review' } } });
@@ -1427,29 +1433,31 @@ test('copying or reordering prompts invalidates the old outline and the next pla
             const oldXml = f.plugin.state.plan.xml;
             const result = await f.plugin.onAction(action, action === 'movePrompt' ? { id: 'c', beforeId: 'a' } : { id: 'a' });
             assert.ok(result.id); assert.equal(f.plugin.state.plan.xml, oldXml);
-            assert.equal(await f.plugin.onAction('confirmAndWrite'), false); assert.equal(f.calls.writer.length, 0);
-            assert.match(f.plugin.state.status, /预设.*变化/);
+            await f.plugin.onAction('confirmAndWrite'); assert.equal(f.calls.writer.length, 1);
+            assert.ok(f.calls.writer[0].prompt.includes(oldXml), 'Preset edits must not block the already generated outline');
+            f.input.value = '她递出信。';
             await f.plugin.onAction('generate', { input: f.input.value });
             const actual = f.calls.planner.at(-1).body.messages.filter(message => message.content.startsWith('ORDER_')).map(message => message.content);
             assert.deepEqual(actual, action === 'movePrompt' ? ['ORDER_c', 'ORDER_a', 'ORDER_x', 'ORDER_y'] : ['ORDER_a', 'ORDER_a', 'ORDER_x', 'ORDER_c', 'ORDER_y']);
-            await f.plugin.onAction('confirmAndWrite'); assert.equal(f.calls.writer.length, 1);
+            await f.plugin.onAction('confirmAndWrite'); assert.equal(f.calls.writer.length, 2);
         });
     }
 });
 
-test('creating a prompt or switching a planning/API profile invalidates the current outline', async t => {
+test('creating a prompt or switching a planning/API profile keeps the current outline writable', async t => {
     const f = await fixture(t);
     await f.plugin.onAction('generate', { input: f.input.value });
     await f.plugin.onAction('createPrompt', { name: '补充内容', content: '本轮停在门口。' });
-    assert.equal(await f.plugin.onAction('confirmAndWrite'), false);
-    assert.match(f.plugin.state.status, /预设.*变化/);
-    await f.plugin.onAction('generate', { input: f.input.value });
+    await f.plugin.onAction('confirmAndWrite');
+    assert.equal(f.calls.writer.length, 1);
+    await f.plugin.onAction('generate', { input: '她递出信。' });
     await f.plugin.onAction('presetSaveAs', { name: '同内容副本' });
-    assert.equal(await f.plugin.onAction('confirmAndWrite'), false);
-    await f.plugin.onAction('generate', { input: f.input.value });
+    await f.plugin.onAction('confirmAndWrite');
+    assert.equal(f.calls.writer.length, 2);
+    await f.plugin.onAction('generate', { input: '她递出信。' });
     await f.plugin.onAction('apiProfileSaveAs', { name: '同连接副本', apiKey: '', rememberKey: false });
-    assert.equal(await f.plugin.onAction('confirmAndWrite'), false);
-    assert.equal(f.calls.writer.length, 0);
+    await f.plugin.onAction('confirmAndWrite');
+    assert.equal(f.calls.writer.length, 3);
 });
 
 test('stream mode defaults on, saves per profile and follows all completion actions', async t => {

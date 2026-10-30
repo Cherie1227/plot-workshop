@@ -566,7 +566,6 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         const reject = (code, message) => { throw Object.assign(new Error(message), { code }); };
         if (state.input !== anchor.input) reject('DRAFT_INPUT_CHANGED', '本轮输入已变化，与这份大纲不一致，请重新生成本轮大纲。');
         if (signature !== anchor.story) reject('DRAFT_CONTEXT_CHANGED', '聊天记录或角色资料已变化，或本轮已有正文，请重新生成本轮大纲。');
-        if (configSignature() !== anchor.config) reject('DRAFT_CONFIG_CHANGED', '规划预设、API、正文目标或注入设置已变化，请重新生成本轮大纲。');
         if (!anchor.restoredDraft && anchor.worldRevision !== worldRevision) reject('DRAFT_WORLDBOOK_CHANGED', '世界书资料已变化，请重新生成本轮大纲。');
         if (!anchor.restoredDraft && anchor.animaConfig !== animaConfigSignature()) reject('DRAFT_ANIMA_CHANGED', 'Anima 设置已变化，请重新生成本轮大纲。');
         const composer = draft();
@@ -577,6 +576,9 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             anchor = { ...anchor, story: currentStory, committed: true, draft: composer };
             log('info', 'planner.input.committed', '已核对本轮输入进入聊天，继续沿用大纲，不重复发送用户消息。');
         }
+        // Planning settings and presets only shape how the outline was produced. Prose is
+        // written by the host's live main preset, so planning config drift never blocks writing.
+        if (configSignature() !== anchor.config) log('info', 'planner.config.drifted', '规划预设或规划 API 设置已变化；大纲已生成，仍按当前大纲扩写。');
     }
     function resumeDraft() {
         const current = getContext();

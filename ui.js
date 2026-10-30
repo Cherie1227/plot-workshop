@@ -290,24 +290,26 @@ export function createWorkbench({ getState, onAction }) {
         if (result !== false) { presetNameDirty = false; render(); }
     };
     const presetSaveButton = button('保存预设', () => savePresetName('presetSave'), { className: 'pw-primary' });
-    const presetSelectRow = el('div', 'pw-preset-select-row');
-    presetSelectRow.append(field('当前规划预设', presetSelect), presetSaveButton);
-    const presetSaveStatus = el('p', 'pw-hint pw-preset-save-status'); presetSaveStatus.setAttribute('role', 'status');
-    const presetDeleteButton = button('删除预设', () => { presetDeleteNotice.hidden = false; });
-    presetManageActions.append(
-        button('另存为', () => guardPresetChange(() => savePresetName('presetSaveAs'), { keepName: true })),
-        button('新建预设', () => guardPresetChange(async () => { resetEditor(); const result = await act('presetNew', {}); if (result !== false) { presetNameDirty = false; render(); } })),
-        presetDeleteButton,
-        button('恢复内置', () => guardPresetChange(async () => { resetEditor(); await act('selectPreset', { id: 'builtin' }); presetNameDirty = false; render(); }))
-    );
-    const presetDeleteNotice = el('div', 'pw-editor-notice'); presetDeleteNotice.hidden = true;
+    const presetDeleteNotice = el('div', 'pw-editor-notice pw-delete-notice');
+    presetDeleteNotice.setAttribute('role', 'alert'); presetDeleteNotice.hidden = true;
     const presetDeleteActions = el('div', 'pw-notice-actions');
     presetDeleteActions.append(button('取消', () => { presetDeleteNotice.hidden = true; }), button('确认删除预设', () => guardPresetChange(async () => {
         const result = await act('presetDelete', { id: getState().activePresetId });
         if (result !== false) { resetEditor(); presetNameDirty = false; presetDeleteNotice.hidden = true; render(); }
     }), { className: 'pw-danger' }));
     presetDeleteNotice.append(el('p', '', '删除当前规划预设及其条目？这不会删除聊天。'), presetDeleteActions);
-    presetManage.append(field('名称', presetNameInput), presetManageActions, presetDeleteNotice);
+    const presetDeleteButton = button('删除', () => { presetDeleteNotice.hidden = false; presetDeleteNotice.scrollIntoView({ block: 'nearest' }); },
+        { className: 'pw-danger', iconName: 'trash', title: '删除当前规划预设' });
+    presetDeleteButton.setAttribute('aria-label', '删除当前规划预设');
+    const presetSelectRow = el('div', 'pw-preset-select-row');
+    presetSelectRow.append(field('当前规划预设', presetSelect), presetSaveButton, presetDeleteButton);
+    const presetSaveStatus = el('p', 'pw-hint pw-preset-save-status'); presetSaveStatus.setAttribute('role', 'status');
+    presetManageActions.append(
+        button('另存为', () => guardPresetChange(() => savePresetName('presetSaveAs'), { keepName: true })),
+        button('新建预设', () => guardPresetChange(async () => { resetEditor(); const result = await act('presetNew', {}); if (result !== false) { presetNameDirty = false; render(); } })),
+        button('恢复内置', () => guardPresetChange(async () => { resetEditor(); await act('selectPreset', { id: 'builtin' }); presetNameDirty = false; render(); }))
+    );
+    presetManage.append(field('名称', presetNameInput), presetManageActions);
     const importReviewDetails = el('details', 'pw-import-review pw-advanced');
     importReviewDetails.append(el('summary', '', '导入检查'));
     const importReviewMessage = el('p', 'pw-hint pw-format-status');
@@ -429,7 +431,7 @@ export function createWorkbench({ getState, onAction }) {
     }
     for (const drawer of drawers) { drawer.hidden = true; presetDrawers.append(drawer); }
     presetToolbar.append(button('管理', () => togglePresetDrawer(manageDrawer), { iconName: 'settings' }), button('导入', () => togglePresetDrawer(importDrawer), { iconName: 'upload' }), button('检查', () => togglePresetDrawer(checkDrawer), { iconName: 'file' }), newPromptButton);
-    presets.append(presetHead, presetSelectRow, presetSaveStatus, presetToolbar, presetDrawers, importInput, presetUnsaved, undoNotice, groupLeaveNotice, groupRangePanel, presetGroups, presetWarnings);
+    presets.append(presetHead, presetSelectRow, presetDeleteNotice, presetSaveStatus, presetToolbar, presetDrawers, importInput, presetUnsaved, undoNotice, groupLeaveNotice, groupRangePanel, presetGroups, presetWarnings);
     const inspectionDetails = el('details', 'pw-inspection pw-advanced');
     inspectionDetails.append(el('summary', '', '本轮读取与用量'));
     const inspectButton = button('读取本轮资料', () => act('inspectPrompts', { input: input.value }), { className: 'pw-inspect-button' });
