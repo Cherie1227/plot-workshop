@@ -44,6 +44,17 @@ const regenerationFallbacks = {
 };
 const errorCode = error => typeof error?.code === 'string' && /^[A-Z0-9_]{1,64}$/.test(error.code) ? error.code : 'UNKNOWN';
 
+// Detect accidental round/history changes without caching the chat or character card.
+function draftStoryKey(text) {
+    let a = 2166136261, b = 5381;
+    for (let i = 0; i < text.length; i++) {
+        const code = text.charCodeAt(i);
+        a = Math.imul(a ^ code, 16777619);
+        b = Math.imul(b, 33) ^ code;
+    }
+    return `${text.length}:${a >>> 0}:${b >>> 0}`;
+}
+
 function readPlanningPreset(input, options) {
     const data = structuredClone(input);
     const source = data?.version && data?.data ? data.data : data;
@@ -114,6 +125,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     const runtimeLog = createRuntimeLog({ getSecrets: () => [...historicalSecrets, state.apiKey, ...[...secretCache.values()].map(item => item.key)], limit: 200 });
     state.logs = runtimeLog.entries;
     let workId = 0, controller = null, gate = null, anchor = null, memory = null;
+    let draftRound = null, restoredDraft = false;
     let generationToken, preparationError, resuming = null, writerActive = false, disposeReuse = null, worldRevision = 0;
     let nativeRegeneration = null;
     const animaCleanup = createAnimaCleanupGuard();
@@ -396,11 +408,12 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     function cacheDraft() {
         try {
             sessionStorage.setItem(`${STORE}:draft:${getContext().chatId}`, JSON.stringify({ xml: state.plan?.xml || '', input: state.input,
-                versions: state.planVersions.slice(-20) }));
+                versions: state.planVersions.slice(-20), round: draftRound }));
         } catch { /* Session storage may be unavailable; the visible draft remains usable. */ }
     }
     function restoreDraft() {
         state.plan = null; state.rawPlan = ''; state.planningAnalysis = null; anchor = null; memory = null;
+        draftRound = null; restoredDraft = false;
         state.planVersions = []; state.diagnosis = null; state.promptPreview = null;
         state.promptInspection = null; inspectionAnchor = null; diagnosisAnchor = null; currentVersionId = null; versionAnchors.clear();
         try {
@@ -410,14 +423,24 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             }
             if (savedDraft?.xml) {
                 state.plan = parseContent(savedDraft.xml); state.rawPlan = savedDraft.xml; state.input = savedDraft.input || '';
-                state.status = '已恢复上次大纲供查看；重新规划后才能自动扩写。';
+                if (!Object.hasOwn(savedDraft, 'round')) {
+                    // v0.2.11 and earlier stored only input/XML under a chat-specific key.
+                    // An explicit confirmation may reuse them on an exact current-input match.
+                    draftRound = { version: 1, chatId: getContext().chatId, input: state.input, baseStoryKey: null };
+                } else if (savedDraft.round?.version === 1 && typeof savedDraft.round.chatId === 'string'
+                    && typeof savedDraft.round.input === 'string'
+                    && (savedDraft.round.baseStoryKey === null || typeof savedDraft.round.baseStoryKey === 'string')) {
+                    draftRound = savedDraft.round;
+                }
+                restoredDraft = true; state.stage = 'review';
+                state.status = '已恢复上次大纲；确认并扩写时将核对最新用户输入，匹配后直接调用主模型。';
             }
         } catch { /* A malformed saved draft is never injected. */ }
     }
     function recordVersion(label) {
         const version = makeVersion({ xml: state.plan.xml, input: state.input, label, parentId: currentVersionId }, state.planVersions);
         state.planVersions.push(version); state.planVersions = state.planVersions.slice(-20); currentVersionId = version.id;
-        versionAnchors.set(version.id, { anchor, memory });
+        versionAnchors.set(version.id, { anchor, memory, draftRound });
         for (const id of versionAnchors.keys()) if (!state.planVersions.some(item => item.id === id)) versionAnchors.delete(id);
         cacheDraft();
     }
@@ -501,6 +524,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         state.planVersions = [...state.planVersions, ...versions].slice(-20);
         state.extraWorldbooks = data.extraWorldbooks;
         state.plan = null; state.rawPlan = ''; state.planningAnalysis = null; anchor = null; memory = null; inspectionAnchor = null; diagnosisAnchor = null;
+        draftRound = null; restoredDraft = false;
         state.promptInspection = null; state.promptPreview = null; state.diagnosis = null; currentVersionId = null;
         resetDetection(); clearDeletionUndo(); clearInjection(getContext()); persist(); cacheDraft();
         log('success', 'backup.imported', '备份已导入为新方案；旧大纲仅供查看，须重新规划。');
@@ -529,11 +553,39 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         status(message);
     }
     function checkAnchor({ afterSubmission = false } = {}) {
-        if (!anchor || !state.plan) throw new Error('请先为当前输入生成大纲。已恢复的旧草稿只能查看或复制。');
+        if (!anchor || !state.plan) throw new Error('当前大纲尚未绑定本轮输入；恢复的草稿可点击“确认并扩写”核对后使用。');
         const current = getContext();
         const signature = storySnapshot(current, afterSubmission && !anchor.committed ? { dropLastInput: anchor.input } : {});
-        if (signature !== anchor.story || configSignature() !== anchor.config || state.input !== anchor.input || anchor.worldRevision !== worldRevision || anchor.animaConfig !== animaConfigSignature()) throw new Error('聊天、输入、世界书、预设或设置已变化，请重新生成本轮大纲。');
+        if (signature !== anchor.story || configSignature() !== anchor.config || state.input !== anchor.input
+            || (!anchor.restoredDraft && (anchor.worldRevision !== worldRevision || anchor.animaConfig !== animaConfigSignature()))) throw new Error('聊天、输入、世界书、预设或设置已变化，请重新生成本轮大纲。');
         if (!afterSubmission && draft() !== anchor.draft) throw new Error('酒馆输入框已经改变，请重新规划，以免覆盖新输入。');
+    }
+    function resumeDraft() {
+        const current = getContext();
+        assertChat(current);
+        if (!restoredDraft || !state.plan || !draftRound || draftRound.chatId !== current.chatId
+            || !draftRound.input.trim() || draftRound.input !== state.input) {
+            throw new Error('这份草稿与当前聊天或本轮输入不匹配，请选择对应大纲或重新生成。');
+        }
+        const input = draftRound.input, composer = draft(), last = current.chat.at(-1);
+        if (composer && composer !== input) throw new Error('酒馆输入框已有不同的新输入，未覆盖它；请先处理新输入再确认这份草稿。');
+        const committed = last?.is_user && !last.is_system && String(last.mes) === input;
+        if (!committed && composer !== input && draftRound.baseStoryKey === null) throw new Error('这份草稿不对应当前待回复的最新用户输入，或该输入已有正文；未调用主模型。');
+        const baseStory = storySnapshot(current, committed ? { dropLastInput: input } : {});
+        if (draftRound.baseStoryKey !== null && draftStoryKey(baseStory) !== draftRound.baseStoryKey) {
+            throw new Error('这份草稿对应的聊天前文或角色资料已变化，请重新生成本轮大纲。');
+        }
+        // Rebind only on an explicit confirmation. No planner request or persisted
+        // raw Anima memory is needed; the main generation reads its current context.
+        state.plan = parseContent(state.plan.xml); state.rawPlan = state.plan.xml;
+        memory = null;
+        anchor = { story: storySnapshot(current), baseStory, config: configSignature(), outlineConfig: configSignature(true),
+            draft: composer, input, committed: !!committed, chatId: current.chatId, worldRevision,
+            animaConfig: animaConfigSignature(), animaPath: state.animaDetectedPath || state.settings.animaPath,
+            generationType: 'normal', restoredDraft: true };
+        draftRound = { version: 1, chatId: current.chatId, input, baseStoryKey: draftStoryKey(baseStory) };
+        cacheDraft();
+        log('success', 'planner.draft.reused', '恢复的大纲与当前用户输入匹配，直接交给主模型，未请求规划 API。');
     }
     function inject() {
         const fixedAnchor = anchor;
@@ -641,6 +693,8 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         anchor = { story: initialStory, baseStory, config: initialConfig, draft: initialDraft,
             input: userInput, committed, chatId: getContext().chatId, worldRevision, animaConfig: planningAnimaConfig,
             outlineConfig: configSignature(true), animaPath: state.animaDetectedPath || state.settings.animaPath, generationType };
+        draftRound = { version: 1, chatId: anchor.chatId, input: userInput, baseStoryKey: draftStoryKey(baseStory) };
+        restoredDraft = false;
         recordVersion(versionLabel); refreshPromptPreview();
         state.stage = 'review'; status('本轮大纲已生成，可以编辑、复制或确认扩写。');
         return result;
@@ -658,6 +712,8 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     }
     async function confirmAndWrite() {
         if (state.apiBusy || state.animaChecking) throw new Error('请先完成或取消 API 操作或 Anima 检测。');
+        if (!gate && (state.busy || hostGenerating || (typeof getContext().isGenerating === 'function' ? getContext().isGenerating() : getContext().isGenerating))) throw new Error('当前操作尚未结束。');
+        if (!anchor && restoredDraft) resumeDraft();
         checkAnchor();
         if (state.settings.mode === 'manual') throw new Error('当前为仅生成大纲模式。可以复制或填入输入框；自动扩写需切换模式后重新规划。');
         if (gate) { gate.resolve(true); view.close(); return; }
@@ -670,7 +726,9 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         state.busy = true;
         const generationType = anchor.generationType === 'regenerate' ? 'regenerate' : 'normal';
         if (generationType !== 'regenerate') {
-            disposeReuse = anima.skipNextAnimaRecall({ matches: sameResumingStory });
+            // Restored drafts have no saved recall. Let Anima run its normal main
+            // generation hook instead of claiming an unavailable memory snapshot.
+            if (!anchor.restoredDraft) disposeReuse = anima.skipNextAnimaRecall({ matches: sameResumingStory });
             hostInput().value = anchor.committed ? '' : state.input;
             hostInput().dispatchEvent(new Event('input', { bubbles: true }));
         }
@@ -804,7 +862,10 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             return;
         }
         if (resuming) {
-            try { checkAnchor({ afterSubmission: true }); writerActive = true; inject(); }
+            try {
+                if (preparationError) throw preparationError;
+                checkAnchor({ afterSubmission: true }); writerActive = true; inject();
+            }
             catch (e) { abort(true); fail(e); }
             return;
         }
@@ -902,6 +963,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
                 if (!version) throw new Error('大纲版本已不存在。');
                 state.plan = parseContent(version.xml); state.rawPlan = state.plan.xml; state.planningAnalysis = null; state.input = version.input;
                 const stored = versionAnchors.get(version.id); anchor = stored?.anchor || null; memory = stored?.memory || null;
+                draftRound = stored?.draftRound || null; restoredDraft = false;
                 try { checkAnchor(); } catch { anchor = null; memory = null; }
                 currentVersionId = version.id; state.stage = 'review'; cacheDraft(); refreshPromptPreview();
                 diagnosisAnchor = null;
