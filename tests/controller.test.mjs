@@ -39,7 +39,7 @@ async function fixture(t, { settings = {}, saved, fetchMode = 'success', api, de
         removeListener(name, fn) { handlers.set(name, (handlers.get(name) || []).filter(f => f !== fn)); },
         async emit(name, ...args) { for (const handler of handlers.get(name) || []) await handler(...args); },
     };
-    const calls = { planner: [], writer: [], replays: [], saves: 0, recalled: 0, invalidated: 0, aborted: 0, detection: [], observers: [], recalls: [], reloads: 0 };
+    const calls = { planner: [], writer: [], replays: [], saves: 0, recalled: 0, skippedRecalls: 0, invalidated: 0, aborted: 0, detection: [], observers: [], recalls: [], reloads: 0 };
     const ctx = {
         chatId: 'chat-a', characterId: 0, groupId: null, name1: '苏青', name2: '林澄', onlineStatus: 'connected',
         characters: [{ name: '林澄', description: '谨慎而重视约定', data: { description: '谨慎而重视约定', personality: '', scenario: '门口', mes_example: '' } }],
@@ -60,7 +60,7 @@ async function fixture(t, { settings = {}, saved, fetchMode = 'success', api, de
         async detectInstalledAnima(options) { calls.detection.push(options); return detectAnima ? detectAnima(options) : { status: 'ready', version: '3.3.6', frontendPath: options.settings.frontendPath, message: '已就绪，尚未召回记忆。' }; },
         async installAnimaObserver(options) { calls.observers.push(options); if (observerGate) await observerGate(options); }, beginAnimaGeneration() { return 'generation-token'; }, clearAnimaGeneration() {},
         async recallAnima(options) { calls.recalled++; calls.recalls.push(options); return recallAnima ? recallAnima(options, calls.recalled) : { text: '之前约定不擅自拆信。', status: 'success', source: 'fixture-memory' }; },
-        skipNextAnimaRecall() { return () => {}; }, invalidateAnimaRoundCache() { calls.invalidated++; },
+        skipNextAnimaRecall() { calls.skippedRecalls++; return () => {}; }, invalidateAnimaRoundCache() { calls.invalidated++; },
         getAnimaDynamicCleanupProof: () => dynamicCleanupProof ? structuredClone(dynamicCleanupProof) : null,
     };
     const fetchImpl = async (url, options) => {
@@ -920,6 +920,128 @@ test('input and preset changes invalidate an already generated outline', async t
     assert.equal(calls.writer.length, 0);
     assert.match(plugin.state.status, /预设.*变化/);
     assert.equal(ctx.extensionPrompts[INJECTION_KEY], undefined);
+});
+
+test('a refreshed draft expands the pending input through the current main model without replanning', async t => {
+    for (const submitted of [false, true]) {
+        await t.test(submitted ? 'input already in chat' : 'unsent input', async subtest => {
+            const f = await fixture(subtest, { settings: { autoOnSend: true } });
+            const input = f.input.value;
+            if (submitted) { f.ctx.chat.push({ name: f.ctx.name1, is_user: true, mes: input }); f.input.value = ''; }
+            await f.plugin.onAction('generate', { input });
+            const expectedXml = f.plugin.state.plan.xml;
+            const saved = f.storage.get('plot_workshop:draft:chat-a');
+            assert.ok(!saved.includes('之前约定不擅自拆信'), 'Raw recalled memory must not be persisted');
+            assert.ok(!saved.includes('他站在门口'), 'Chat history must not be persisted');
+            await f.reload();
+            f.ctx.chatCompletionSettings.openai_model = 'new-main-writer';
+            await f.plugin.onAction('confirmAndWrite');
+            assert.equal(f.calls.planner.length, 1, 'Confirmation must not call the planner again');
+            assert.equal(f.calls.recalled, 1, 'Confirmation must not run a separate planning recall');
+            assert.equal(f.calls.skippedRecalls, 0, 'Missing saved memory must not suppress the native Anima hook');
+            assert.equal(f.calls.writer.length, 1);
+            assert.equal(f.calls.writer[0].model, 'new-main-writer');
+            assert.ok(f.calls.writer[0].prompt.includes(expectedXml));
+            assert.equal(f.ctx.chat.filter(message => message.is_user && message.mes === input).length, 1);
+            assert.equal(f.ctx.extensionPrompts[INJECTION_KEY], undefined);
+        });
+    }
+});
+
+test('legacy cached XML and matching input can expand without a configured planning API', async t => {
+    const f = await fixture(t, { settings: { baseUrl: '', model: '', autoOnSend: true } });
+    const input = f.input.value;
+    f.ctx.chat.push({ name: f.ctx.name1, is_user: true, mes: input }); f.input.value = '';
+    f.storage.set('plot_workshop:draft:chat-a', JSON.stringify({ xml, input, versions: [] }));
+    await f.reload();
+    // Simulate the native Anima hook updating its worldbook while the main request starts.
+    f.events.on('GENERATION_STARTED', () => f.events.emit('WORLDINFO_UPDATED', 'native-anima-memory'));
+    await f.plugin.onAction('confirmAndWrite');
+    assert.equal(f.calls.planner.length, 0);
+    assert.equal(f.calls.recalled, 0);
+    assert.equal(f.calls.skippedRecalls, 0);
+    assert.equal(f.calls.writer.length, 1);
+    assert.ok(f.calls.writer[0].prompt.includes(f.plugin.state.plan.xml));
+    assert.equal(f.ctx.chat.filter(message => message.is_user).length, 1);
+});
+
+test('a saved pending round survives a refresh that clears the host composer', async t => {
+    const f = await fixture(t);
+    await f.plugin.onAction('generate', { input: f.input.value });
+    f.input.value = '';
+    await f.reload();
+    await f.plugin.onAction('confirmAndWrite');
+    assert.equal(f.calls.writer.length, 1);
+    assert.equal(f.calls.planner.length, 1);
+    assert.equal(f.ctx.chat.filter(message => message.is_user && message.mes === '她递出信。').length, 1);
+});
+
+test('restored drafts reject changed inputs, different rounds, changed history and already answered turns', async t => {
+    const changes = {
+        'different composer input': f => { f.input.value = '新的输入'; },
+        'edited panel input': f => f.plugin.onAction('input', { value: '另一个本轮输入' }),
+        'different latest user': f => { f.input.value = ''; f.ctx.chat.push({ is_user: true, mes: '新的用户消息' }); },
+        'already answered': f => { f.input.value = ''; f.ctx.chat.push({ is_user: true, mes: '她递出信。' }, { is_user: false, mes: '已收到信。' }); },
+        'repeated input in a later round': f => { f.input.value = ''; f.ctx.chat.push({ is_user: true, mes: '她递出信。' }, { is_user: false, mes: '已收到信。' }, { is_user: true, mes: '她递出信。' }); },
+        'edited prior history': f => { f.ctx.chat[0].mes = '他已经离开。'; },
+        'different character': f => { f.ctx.characters[0].description = '已经改变的人设'; },
+        'another chat': async f => { f.ctx.chatId = 'chat-b'; await f.events.emit('CHAT_CHANGED'); },
+    };
+    for (const [name, change] of Object.entries(changes)) {
+        await t.test(name, async subtest => {
+            const f = await fixture(subtest);
+            await f.plugin.onAction('generate', { input: f.input.value });
+            await f.reload();
+            await change(f);
+            const before = structuredClone(f.ctx.chat), composer = f.input.value;
+            assert.equal(await f.plugin.onAction('confirmAndWrite'), false);
+            assert.equal(f.calls.writer.length, 0);
+            assert.equal(f.calls.planner.length, 1);
+            assert.equal(f.input.value, composer);
+            assert.deepEqual(f.ctx.chat, before);
+            assert.equal(f.ctx.extensionPrompts[INJECTION_KEY], undefined);
+        });
+    }
+});
+
+test('restored draft confirmation rechecks history after asynchronous host preparation', async t => {
+    let release, block = false;
+    const f = await fixture(t, { observerGate: () => block ? new Promise(resolve => { release = resolve; }) : undefined });
+    await f.plugin.onAction('generate', { input: f.input.value });
+    await f.reload(); block = true;
+    const pending = f.plugin.onAction('confirmAndWrite');
+    await until(() => !!release, 'main-generation observer setup');
+    f.ctx.chat[0].mes = '准备期间前文被修改。';
+    release(); await pending;
+    assert.equal(f.calls.writer.length, 0);
+    assert.equal(f.calls.planner.length, 1);
+    assert.equal(f.ctx.extensionPrompts[INJECTION_KEY], undefined);
+    assert.equal(f.plugin.state.busy, false);
+});
+
+test('restored draft confirmation stops when native observer setup fails', async t => {
+    const f = await fixture(t, { observerGate: () => { throw new Error('Anima setup failed'); } });
+    const input = f.input.value;
+    f.storage.set('plot_workshop:draft:chat-a', JSON.stringify({ xml, input, versions: [] }));
+    await f.reload();
+    await f.plugin.onAction('confirmAndWrite');
+    assert.equal(f.calls.writer.length, 0);
+    assert.equal(f.calls.planner.length, 0);
+    assert.equal(f.ctx.extensionPrompts[INJECTION_KEY], undefined);
+    assert.equal(f.plugin.state.busy, false);
+    assert.match(f.plugin.state.status, /Anima setup failed/);
+});
+
+test('edited restored drafts retain their original input binding across another refresh', async t => {
+    const f = await fixture(t);
+    await f.plugin.onAction('generate', { input: f.input.value });
+    await f.reload();
+    await f.plugin.onAction('applyPlanEdit', { xml: f.plugin.state.plan.xml.replace('接信。', '把信留在门口。') });
+    await f.reload();
+    await f.plugin.onAction('confirmAndWrite');
+    assert.equal(f.calls.writer.length, 1);
+    assert.match(f.calls.writer[0].prompt, /把信留在门口/);
+    assert.equal(f.calls.planner.length, 1);
 });
 
 test('planner HTTP failure sends no writer request, exposes no secret and leaves no injection', async t => {
