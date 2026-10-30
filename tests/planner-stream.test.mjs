@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { requestPlan, readChatCompletionResponse } from '../lib/planner.js';
+import { createSTTransport } from '../lib/host.js';
 
 const xml = '<content><plot>当面解释</plot><characters><character name="林澄"><emotion>仍有戒心</emotion><response>询问来意</response></character></characters><segments><segment index="1">林澄停在门边，询问对方为何来访。</segment></segments><end_state>停在对方回答前</end_state></content>';
 const base = { baseUrl: 'https://planner.invalid/v1', apiKey: 'secret-test-key', model: 'fixture', messages: [{ role: 'user', content: 'fixture input' }] };
@@ -22,7 +23,7 @@ function response(text, { chunkSize = 0, hang = false, error = null, contentType
         },
         cancel() { cancellations++; },
     });
-    return { value: new Response(stream, { headers: { 'content-type': contentType } }), cancelled: () => cancellations };
+    return { value: new Response(stream, { headers: contentType == null ? {} : { 'content-type': contentType } }), cancelled: () => cancellations };
 }
 const plan = (text, options = {}, streamOptions = {}) => requestPlan({ ...base, stream: true, ...options, transport: async () => response(text, streamOptions).value });
 
@@ -151,6 +152,84 @@ test('JSON fallback and non-streaming defaults preserve existing behavior; decla
     await requestPlan({ ...base, transport: async request => { assert.equal(request.body.stream, false); return new Response(JSON.stringify({ choices: [{ message: { content: xml } }] })); } });
     await assert.rejects(requestPlan({ ...base, stream: false, transport: async () => response(event(delta(xml))).value }), { code: 'OUTPUT_INCOMPLETE' });
     await assert.rejects(requestPlan({ ...base, stream: 'true', transport: async () => { throw new Error('must not send'); } }), { code: 'PARAMETER_INVALID' });
+});
+
+test('streaming detects SSE when a forwarding host omits or replaces the content type', async () => {
+    for (const contentType of [null, '', 'text/plain', 'application/octet-stream']) {
+        for (const prefix of ['', '\uFEFF: heartbeat\r\n\r\n']) {
+            const result = await plan(prefix + complete(), {}, { contentType, chunkSize: 1 });
+            assert.equal(result.raw, xml, `Content-Type: ${contentType ?? '(absent)'}`);
+        }
+    }
+});
+
+test('untyped streaming requests still accept full JSON responses and safe API errors', async () => {
+    const json = { choices: [{ message: { content: xml }, finish_reason: 'stop' }], usage: { total_tokens: 23 } };
+    for (const contentType of [null, '', 'text/plain', 'application/octet-stream']) {
+        const result = await plan(`\uFEFF \r\n${JSON.stringify(json)}`, {}, { contentType, chunkSize: 1 });
+        assert.equal(result.raw, xml); assert.equal(result.usage.total_tokens, 23);
+        for (const [error, code] of [
+            [{ code: 'unknown', message: 'private-story secret-test-key' }, 'API_ERROR'],
+            [{ code: 'upstream_timeout', message: 'private-story secret-test-key' }, 'UPSTREAM_TIMEOUT'],
+        ]) {
+            await assert.rejects(plan(JSON.stringify({ error }), {}, { contentType, chunkSize: 1 }), caught => caught.code === code && !/private-story|secret-test-key/.test(caught.message));
+        }
+    }
+    for (const [finish_reason, code] of [['length', 'OUTPUT_TRUNCATED'], ['content_filter', 'OUTPUT_INCOMPLETE']]) {
+        await assert.rejects(plan(JSON.stringify({ choices: [{ finish_reason }] }), {}, { contentType: null }), { code });
+    }
+    await assert.rejects(plan(JSON.stringify({ result: 'not a chat completion' }), {}, { contentType: null }), { code: 'RESPONSE_INVALID' });
+});
+
+test('untyped malformed bodies and empty bodies have distinct safe errors', async () => {
+    for (const contentType of [null, '', 'text/plain', 'application/octet-stream']) {
+        for (const text of ['<html>private-story secret-test-key</html>', 'private-story secret-test-key', 'data: {private-story secret-test-key\n\n']) {
+            await assert.rejects(plan(text, {}, { contentType, chunkSize: 1 }), error => error.code === 'RESPONSE_INVALID' && !/private-story|secret-test-key/.test(error.message));
+        }
+        for (const text of ['', '\uFEFF \t\r\n']) {
+            await assert.rejects(plan(text, {}, { contentType, chunkSize: 1 }), { code: 'RESPONSE_EMPTY' });
+        }
+    }
+});
+
+test('aborting while the response format is undecided cancels the reader', async () => {
+    for (const text of [' \r\n', 'da']) {
+        const signal = new AbortController();
+        const source = response(text, { contentType: null, chunkSize: 1, hang: true });
+        const pending = requestPlan({ ...base, stream: true, signal: signal.signal, transport: async () => source.value });
+        await new Promise(resolve => setTimeout(resolve, 0)); signal.abort();
+        await assert.rejects(pending, { code: 'ABORTED' });
+        assert.equal(source.cancelled(), 1); assert.equal(source.value.body.locked, false);
+    }
+});
+
+test('reasoning-only completions are distinguished from an empty assistant response', async () => {
+    for (const field of ['reasoning_content', 'reasoning']) {
+        const reasoning = { [field]: 'private-reasoning secret-test-key' };
+        await assert.rejects(plan(event(delta('', reasoning)) + event(finish()) + event('[DONE]')), error => error.code === 'OUTPUT_REASONING_ONLY' && !/private-reasoning|secret-test-key/.test(error.message));
+        const json = { choices: [{ message: { content: ' \n', ...reasoning }, finish_reason: 'stop' }] };
+        await assert.rejects(plan(JSON.stringify(json), {}, { contentType: null }), error => error.code === 'OUTPUT_REASONING_ONLY' && !/private-reasoning|secret-test-key/.test(error.message));
+    }
+    await assert.rejects(plan(complete(' \n')), { code: 'OUTPUT_EMPTY' });
+});
+
+test('ST forwarding can deliver a usable plan without propagating the upstream content type', async () => {
+    let captured;
+    const upstream = response('\uFEFF: heartbeat\n\n' + complete(), { chunkSize: 1 });
+    const transport = createSTTransport(() => ({ getRequestHeaders: () => ({ 'X-CSRF-Token': 'fixture-csrf' }) }), async (url, init) => {
+        captured = { url, init };
+        const forwarded = new Response(upstream.value.body);
+        assert.equal(forwarded.headers.get('content-type'), null);
+        return forwarded;
+    });
+    const result = await requestPlan({ ...base, stream: true, maxTokens: 60000, transport });
+    assert.equal(result.raw, xml);
+    assert.equal(captured.url, '/api/backends/chat-completions/generate');
+    assert.equal(captured.init.credentials, 'same-origin');
+    assert.equal(captured.init.headers['X-CSRF-Token'], 'fixture-csrf');
+    const body = JSON.parse(captured.init.body);
+    assert.equal(body.stream, true); assert.equal(body.max_tokens, 60000);
+    assert.equal(body.reverse_proxy, base.baseUrl); assert.equal(body.chat_completion_source, 'openai');
 });
 
 test('shared reader can deliver plain connection/diagnosis text without assuming the XML protocol', async () => {
