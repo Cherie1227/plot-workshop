@@ -115,7 +115,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     const historicalSecrets = new Set();
     const extraWorldbooksByChat = Object.fromEntries(Object.entries(saved.extraWorldbooksByChat || {}).map(([id, names]) => [id, bookNames(names)]));
     const state = { settings: cleanSettings({ ...initialSettings, ...connectionSettings(activeApi) }),
-        preset: readPlanningPreset(activePreset.preset).preset, apiKey: '', input: '', plan: null, rawPlan: '', planningAnalysis: null,
+        preset: readPlanningPreset(activePreset.preset).preset, apiKey: '', input: '', plan: null, rawPlan: '', planningAnalysis: null, planningFailure: null,
         apiProfiles, activeApiProfileId: activeApi.id, rememberApiKey: false, apiStatus: '', apiBusy: false, models: [],
         presetLibrary, activePresetId: activePreset.id, planVersions: [],
         promptPreview: null, promptInspection: null, inspectionStale: true, diagnosis: null,
@@ -413,7 +413,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         } catch { /* Session storage may be unavailable; the visible draft remains usable. */ }
     }
     function restoreDraft() {
-        state.plan = null; state.rawPlan = ''; state.planningAnalysis = null; anchor = null; memory = null;
+        state.plan = null; state.rawPlan = ''; state.planningAnalysis = null; state.planningFailure = null; anchor = null; memory = null;
         draftRound = null; restoredDraft = false;
         state.planVersions = []; state.diagnosis = null; state.promptPreview = null;
         state.promptInspection = null; inspectionAnchor = null; diagnosisAnchor = null; currentVersionId = null; versionAnchors.clear();
@@ -524,7 +524,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         if (presets.length) { state.activePresetId = presets[0].id; state.preset = readPlanningPreset(presets[0].preset).preset; }
         state.planVersions = [...state.planVersions, ...versions].slice(-20);
         state.extraWorldbooks = data.extraWorldbooks;
-        state.plan = null; state.rawPlan = ''; state.planningAnalysis = null; anchor = null; memory = null; inspectionAnchor = null; diagnosisAnchor = null;
+        state.plan = null; state.rawPlan = ''; state.planningAnalysis = null; state.planningFailure = null; anchor = null; memory = null; inspectionAnchor = null; diagnosisAnchor = null;
         draftRound = null; restoredDraft = false;
         state.promptInspection = null; state.promptPreview = null; state.diagnosis = null; currentVersionId = null;
         resetDetection(); clearDeletionUndo(); clearInjection(getContext()); persist(); cacheDraft();
@@ -644,6 +644,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         const target = proseTarget(state.settings);
         assertChat(getContext());
         const id = ++workId;
+        if (!inspectOnly) state.planningFailure = null;
         controller = new AbortController();
         const signal = controller.signal;
         const initialStory = storySnapshot(getContext()), initialConfig = configSignature(), initialDraft = draft();
@@ -698,11 +699,23 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         }
         state.stage = 'planning'; planningStatus('规划模型正在生成本轮大纲…');
         log('info', 'planner.request.started', '开始请求本轮大纲。', { model: state.settings.model, messageCount: compiled.messages.length });
-        const result = await requestPlan({ baseUrl: state.settings.baseUrl, model: state.settings.model, apiKey: state.apiKey,
-            messages: compiled.messages, signal, timeoutMs: 600000, stream: state.settings.stream,
-            ...(state.settings.temperature !== '' ? { temperature: Number(state.settings.temperature) } : {}),
-            ...(state.settings.maxTokens !== '' ? { maxTokens: Number(state.settings.maxTokens) } : {}),
-            transport: createSTTransport(getContext, fetchImpl), DOMParser: globalThis.DOMParser });
+        let result;
+        try {
+            result = await requestPlan({ baseUrl: state.settings.baseUrl, model: state.settings.model, apiKey: state.apiKey,
+                messages: compiled.messages, signal, timeoutMs: 600000, stream: state.settings.stream,
+                ...(state.settings.temperature !== '' ? { temperature: Number(state.settings.temperature) } : {}),
+                ...(state.settings.maxTokens !== '' ? { maxTokens: Number(state.settings.maxTokens) } : {}),
+                transport: createSTTransport(getContext, fetchImpl), DOMParser: globalThis.DOMParser });
+        } catch (error) {
+            check(); // Do not expose a late response in another chat or cancelled round.
+            if (error.responsePreview) {
+                state.planningFailure = { ...error.responsePreview, code: errorCode(error),
+                    content: redactSecrets(error.responsePreview.content, [...historicalSecrets, state.apiKey]),
+                    reasoning: redactSecrets(error.responsePreview.reasoning, [...historicalSecrets, state.apiKey]) };
+                error.message += ' 可在“大纲 → 最近失败响应”查看返回文本。';
+            }
+            throw error;
+        }
         check();
         const { raw: returnedText, analysis, ...plan } = result;
         state.plan = plan; state.rawPlan = plan.xml;
@@ -864,7 +877,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     function reuseRegenerationPlan(saved) {
         const current = getContext();
         state.input = saved.input; state.plan = structuredClone(saved.plan); state.rawPlan = state.plan.xml;
-        state.planningAnalysis = null; memory = { ...structuredClone(saved.memory), reusedForRound: true };
+        state.planningAnalysis = null; state.planningFailure = null; memory = { ...structuredClone(saved.memory), reusedForRound: true };
         anchor = { story: saved.prefix, baseStory: storySnapshot(current, { dropLastInput: saved.input }),
             config: configSignature(), outlineConfig: configSignature(true), draft: draft(), input: saved.input,
             committed: true, chatId: current.chatId, worldRevision, animaConfig: saved.animaConfig,
@@ -935,6 +948,13 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     }
     async function onAction(type, payload = {}) {
         try {
+            if (type === 'clearFailedResponse') { state.planningFailure = null; render(); return; }
+            if (type === 'copyFailedResponse') {
+                const failure = state.planningFailure;
+                if (!failure) throw new Error('本页没有保留失败响应。');
+                await copyText(`错误：${failure.code}\n结束原因：${failure.finishReason}\n${failure.truncated ? '长文本仅保留前后片段。\n' : ''}\n【返回文本】\n${failure.content}\n\n【接口分析】\n${failure.reasoning}`);
+                status('失败响应已复制，仅供排查。'); return;
+            }
             if (type === 'checkUpdate') return await updater.check();
             if (type === 'installUpdate') return await updater.install();
             if (type === 'updatePreferences') { updater.setPreferences(payload); persist(); render(); return; }
@@ -988,7 +1008,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             if (type === 'restoreVersion') {
                 const version = state.planVersions.find(item => item.id === payload.id);
                 if (!version) throw new Error('大纲版本已不存在。');
-                state.plan = parseContent(version.xml); state.rawPlan = state.plan.xml; state.planningAnalysis = null; state.input = version.input;
+                state.plan = parseContent(version.xml); state.rawPlan = state.plan.xml; state.planningAnalysis = null; state.planningFailure = null; state.input = version.input;
                 const stored = versionAnchors.get(version.id); anchor = stored?.anchor || null; memory = stored?.memory || null;
                 draftRound = stored?.draftRound || null; restoredDraft = false;
                 try { checkAnchor(); } catch { anchor = null; memory = null; }
@@ -1369,7 +1389,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             if (state.settings.enabled && !state.busy && !state.apiBusy && !state.animaChecking) await detectAnima();
             if (!state.busy && !state.apiBusy && !state.animaChecking && typeof getContext().getWorldInfoNames === 'function') refreshHostCatalog();
         },
-        destroy() { destroyed = true; quickActions?.destroy(); entryPoints?.destroy(); writerReceipt = null; animaCleanup.reset(); state.planningAnalysis = null; updater.destroy(); cancel(); for (const [event, fn] of listeners) ctx.eventSource.removeListener(event, fn); view.destroy(); state.apiKey = ''; secretCache.clear(); },
+        destroy() { destroyed = true; quickActions?.destroy(); entryPoints?.destroy(); writerReceipt = null; animaCleanup.reset(); state.planningAnalysis = null; state.planningFailure = null; updater.destroy(); cancel(); for (const [event, fn] of listeners) ctx.eventSource.removeListener(event, fn); view.destroy(); state.apiKey = ''; secretCache.clear(); },
     };
 }
 

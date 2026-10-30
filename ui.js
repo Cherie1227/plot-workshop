@@ -528,7 +528,17 @@ export function createWorkbench({ getState, onAction }) {
     const manualHint = el('p', 'pw-hint pw-manual-hint', '填入后不会自动发送；若作为普通聊天消息发送，大纲可能进入历史与记忆。');
     const draftHint = el('p', 'pw-hint pw-draft-hint', '有尚未应用的修改。请先应用修改，再重生成、复制或扩写。');
     planSection.append(planHeader, planReading, planEditing, planAnalysis, outputActions, primaryPlanActions, draftHint, manualHint);
-    outlinePage.append(pageHeading, steps, inputField, generationActions, planSection);
+    const failedResponse = el('details', 'pw-plan-failure pw-plan-reading');
+    const failedResponseMeta = el('p', 'pw-hint');
+    const failedResponseText = el('pre', 'pw-analysis-text');
+    const failedReasoningText = el('pre', 'pw-analysis-text');
+    const failedReasoningTitle = el('h4', '', '接口分析');
+    const failedResponseActions = el('div', 'pw-output-actions');
+    failedResponseActions.append(button('复制失败响应', () => act('copyFailedResponse'), { iconName: 'copy' }), button('清除', () => act('clearFailedResponse')));
+    failedResponse.append(el('summary', '', '最近失败响应'), failedResponseMeta,
+        el('p', 'pw-hint', '仅供排查，未作为大纲使用。只保留在本页，不进入正文请求、聊天、记忆或备份；重新生成、刷新或切换聊天后清除。'),
+        el('h4', '', '返回文本'), failedResponseText, failedReasoningTitle, failedReasoningText, failedResponseActions);
+    outlinePage.append(pageHeading, steps, inputField, generationActions, failedResponse, planSection);
 
     const promptEditorPage = el('section', 'pw-prompt-editor-page');
     const promptBack = button('返回', () => withUnsavedGuard(() => { resetEditor(); render(); restorePromptListPosition(); }), { className: 'pw-back', iconName: 'back' });
@@ -1604,6 +1614,12 @@ export function createWorkbench({ getState, onAction }) {
         modelSearchStatus.textContent = modelSearchStatus.hidden ? '' : '无匹配模型，可手动填写。';
     }
     function renderPlan(state) {
+        const failure = state.planningFailure;
+        failedResponse.hidden = !failure;
+        failedResponseMeta.textContent = failure ? `错误：${failure.code} · 结束原因：${failure.finishReason}${failure.truncated ? ' · 长文本仅保留前后片段' : ''}` : '';
+        failedResponseText.textContent = failure?.content || '未返回文本。';
+        failedReasoningText.textContent = failure?.reasoning || '';
+        failedReasoningTitle.hidden = failedReasoningText.hidden = !failure?.reasoning;
         const raw = state.rawPlan || state.plan?.xml || '';
         if (raw !== seenRawPlan) {
             seenRawPlan = raw;

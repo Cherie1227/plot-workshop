@@ -515,3 +515,4 @@
 .pw-workbench .pw-analysis-block{margin-top:18px;min-width:0}
 .pw-workbench .pw-analysis-block h4{font-size:var(--pw-font-size);font-weight:500;color:var(--pw-accent);margin-bottom:8px}
 .pw-workbench .pw-analysis-text{margin:0;padding:12px;border:1px solid var(--pw-line-fine);border-radius:var(--pw-radius);background:var(--pw-inset);color:var(--pw-ink);font:var(--pw-font-size)/var(--pw-line-height) var(--pw-font);white-space:pre-wrap;overflow-wrap:anywhere;max-height:55vh;overflow:auto;user-select:text;-webkit-user-select:text}
+.pw-workbench .pw-plan-failure{margin-block:14px}.pw-workbench .pw-plan-failure>summary{cursor:pointer;min-height:28px}.pw-workbench .pw-plan-failure>:not(summary){margin-top:12px}
