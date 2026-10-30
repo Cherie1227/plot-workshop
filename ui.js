@@ -738,7 +738,7 @@ export function createWorkbench({ getState, onAction }) {
     const wordFields = el('div', 'pw-word-fields');
     settingInput(wordFields, 'minWords', '最少字数', 'number', '未设置', undefined, { min: '1', step: '1', inputMode: 'numeric' });
     settingInput(wordFields, 'maxWords', '最多字数', 'number', '未设置', undefined, { min: '1', step: '1', inputMode: 'numeric' });
-    lengthSection.append(wordFields, el('p', 'pw-hint', '规划与扩写使用同一份目标。剧情推进、感情推进与情绪强度档位在预设页的「档位｜推进与情绪强度」分组中开关，未启用任何档位时由规划模型按场景性质判断。'));
+    lengthSection.append(wordFields, el('p', 'pw-hint', '规划与扩写使用同一份目标。剧情推进、感情推进与情绪强度档位在预设页的「档位｜推进、情绪与场外」分组中开关，未启用任何档位时由规划模型按场景性质判断。'));
     const modeSection = settingsSection('使用方式');
     const modeSelect = el('select', 'pw-input');
     modeSelect.setAttribute('aria-label', '使用方式');

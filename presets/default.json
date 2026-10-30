@@ -385,6 +385,48 @@
       "injection_order": 100,
       "injection_trigger": [],
       "forbid_overrides": true,
+      "identifier": "outline_offstage_scene",
+      "name": "档位｜场外事件·仅当前场景",
+      "content": "场外事件固定为仅当前场景档：本轮只写在场人物的行动与反馈；场外世界继续运转但不进入本轮视野，不插入新消息、到访、电话或场外突发，他人线索的推进留在场外、本轮不呈现。适合独处、深度对话或需要专注当下互动的轮次。本条启用即锁定场外事件的档位，三条互斥（只启用一条）；全部未启用时按「世界不停摆」的常态处理。任何档位下场外世界都继续运转、伏笔与持续状态照常累积，差别只在场外事态进入本轮的程度；场外事件带着自身来由从既有条件自然发生，不替用户作重大决定。",
+      "enabled": false,
+      "system_prompt": false,
+      "marker": false
+    },
+    {
+      "role": "system",
+      "injection_position": 0,
+      "injection_depth": 4,
+      "injection_order": 100,
+      "injection_trigger": [],
+      "forbid_overrides": true,
+      "identifier": "outline_offstage_enter",
+      "name": "档位｜场外事件·允许到场",
+      "content": "场外事件固定为允许到场档：场外事态可以作为本轮交汇的来源，消息、来访、电话、他人行程的变化可自然进入本轮，但只提供新的信息与契机，不直接改写本轮核心矛盾的方向；是否接住、如何回应仍由在场人物决定。本条启用即锁定场外事件的档位，三条互斥（只启用一条）；全部未启用时按「世界不停摆」的常态处理。任何档位下场外世界都继续运转、伏笔与持续状态照常累积，差别只在场外事态进入本轮的程度；场外事件带着自身来由从既有条件自然发生，不替用户作重大决定。",
+      "enabled": false,
+      "system_prompt": false,
+      "marker": false
+    },
+    {
+      "role": "system",
+      "injection_position": 0,
+      "injection_depth": 4,
+      "injection_order": 100,
+      "injection_trigger": [],
+      "forbid_overrides": true,
+      "identifier": "outline_offstage_main",
+      "name": "档位｜场外事件·影响主线",
+      "content": "场外事件固定为影响主线档：场外事态可以直接冲击本轮核心矛盾，成为本轮变化的主驱动力之一；到了时机的场外线索与后果优先兑现，允许场外力量迫使在场人物重新选择。仍须从既有条件自然发生，不凭空降下无关的突发事件。本条启用即锁定场外事件的档位，三条互斥（只启用一条）；全部未启用时按「世界不停摆」的常态处理。任何档位下场外世界都继续运转、伏笔与持续状态照常累积，差别只在场外事态进入本轮的程度；场外事件带着自身来由从既有条件自然发生，不替用户作重大决定。",
+      "enabled": false,
+      "system_prompt": false,
+      "marker": false
+    },
+    {
+      "role": "system",
+      "injection_position": 0,
+      "injection_depth": 4,
+      "injection_order": 100,
+      "injection_trigger": [],
+      "forbid_overrides": true,
       "identifier": "outline_card_reading",
       "name": "人物｜条件人格与个体差异",
       "content": "【读卡】\n从设定读出稳定价值、长期欲求、惯常表达、防御方式、生活重心、能力与现实资源；再区分对陌生人、熟人、家人、竞争者、暧昧或恋爱对象等条件下的不同表现。先确认本轮对象与关系满足哪项条件，再采用相应特征。\n【落实】\n用“面对谁、知道什么、在意什么、处于何种压力、有哪些既有经历”决定他此刻怎样表现。外在亲切可以与内在疏离并存，克制可以包含主动争取；表演出来的亲密、真实信任、关系承诺分别判断。人物在故事中收到一份‘恋人设定’只改变这次互动的情境；以真实暧昧或恋爱关系为前提的特征，仍按已成立的关系判断。\n【个体性】\n职业、地位和人格标签只提供相关经验、资源与责任，不替代个人声音与关系方式。职业在本场景没有实际作用时，无需硬套谈判、诊断、审讯、掌控等行为；灰度、主动性和成熟也不能把所有人物写成同一种性格。表达方式是跨场景特质：圆滑者警觉时依然圆滑，试探、拒绝与冲突也以他自己的方式进行，不因局面紧张降级为通用的冷淡、短促或强硬。用户角色同样依据自身设定和真实输入理解。\n【交付】\n给出本轮选用的人格侧面及具体回应依据，落到相关事件；无需抄写整张角色卡。变化怎样积累、哪些仍持续，由情感与关系条目进一步判断。",
@@ -862,6 +904,18 @@
           "enabled": false
         },
         {
+          "identifier": "outline_offstage_scene",
+          "enabled": false
+        },
+        {
+          "identifier": "outline_offstage_enter",
+          "enabled": false
+        },
+        {
+          "identifier": "outline_offstage_main",
+          "enabled": false
+        },
+        {
           "identifier": "outline_card_reading",
           "enabled": true
         },
@@ -1015,7 +1069,7 @@
   "extensions": {
     "dual_model_outline_preset": {
       "schema_version": 1,
-      "preset_version": "0.4.4",
+      "preset_version": "0.4.5",
       "purpose": "本轮任务与资料、人物逻辑、情感与关系、事件链、正文交接、思考确认、输出格式；第三人称、复述输入、轻度抢话",
       "status": "builtin_plugin_preset",
       "required_runtime_context": [
@@ -1081,7 +1135,7 @@
           },
           {
             "id": "outline_tiers",
-            "name": "档位｜推进与情绪强度",
+            "name": "档位｜推进、情绪与场外",
             "order": 2,
             "collapsed": true,
             "enabled": true
@@ -1300,6 +1354,15 @@
             "groupId": "outline_tiers"
           },
           "outline_intensity_200": {
+            "groupId": "outline_tiers"
+          },
+          "outline_offstage_scene": {
+            "groupId": "outline_tiers"
+          },
+          "outline_offstage_enter": {
+            "groupId": "outline_tiers"
+          },
+          "outline_offstage_main": {
             "groupId": "outline_tiers"
           }
         }
