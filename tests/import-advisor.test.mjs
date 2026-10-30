@@ -8,6 +8,16 @@ const preset = (name, content, extra = {}) => normalizePreset({ prompts: [prompt
 const advice = (name, content, extra) => analyzeImportedPreset(preset(name, content, extra));
 function protectedFromDisabling(name, content, extra) { assert.deepEqual(advice(name, content, extra).disable, [], `${name}: ${content}`); }
 
+test('variable additions and space-form dependencies are retained without unknown-macro advice', () => {
+    for (const content of ['{{addvar::rules::请输出完整正文。}}', '{{addglobalvar::rules::请输出完整正文。}}',
+        '{{incvar n}}', '{{decglobalvar::n}}', '{{getvar rules}}', '{{hasglobalvar rules}}', '{{globalvarexists rules}}', '{{flushvar rules}}']) {
+        const result = advice('正文输出', content);
+        assert.deepEqual(result.disable, [], content);
+        assert.match(result.review[0]?.reason, /变量/, content);
+        assert.doesNotMatch(result.review[0]?.reason, /未识别|不支持/, content);
+    }
+});
+
 test('name and affirmative output command identify a short independent module', () => {
     for (const [name, content] of [
         ['正文输出', '请直接输出完整的小说正文。'],

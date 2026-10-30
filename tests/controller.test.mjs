@@ -1702,6 +1702,33 @@ test('session logs redact current and previous keys, omit failure bodies and cle
     assert.equal(f.plugin.state.logs.length, 0);
 });
 
+test('saved built-in preset variables expand identically in repeated inspection and planner requests without host writes', async t => {
+    const f = await fixture(t);
+    f.ctx.chatMetadata.variables = { rules: '酒馆原值' };
+    f.ctx.extensionSettings.variables = { count: '50' };
+    await f.plugin.onAction('editPrompt', { id: 'main', content: '{{addvar::rules::第一条。}}{{addglobalvar::count::1}}' });
+    await f.plugin.onAction('editPrompt', { id: 'outline_input_sources', content: '{{addvar::rules::\n第二条：{{char}}。}}' });
+    await f.plugin.onAction('editPrompt', { id: 'outline_current_state', content: '本轮规则：{{getvar::rules}}/次数={{getglobalvar count}}' });
+    const expected = '本轮规则：第一条。\n第二条：林澄。/次数=1';
+    for (let i = 0; i < 2; i++) {
+        await f.plugin.onAction('inspectPrompts');
+        const entry = f.plugin.state.promptInspection.entries.find(item => item.id === 'outline_current_state');
+        assert.equal(entry.messages[0].content, expected);
+    }
+    assert.equal(f.calls.planner.length, 0);
+    await f.reload();
+    for (const action of ['generate', 'rerollPlan']) {
+        await f.plugin.onAction(action, { input: f.input.value });
+        assert.ok(f.plugin.state.plan);
+        assert.ok(f.calls.planner.at(-1).body.messages.some(message => message.content === expected));
+        assert.doesNotMatch(JSON.stringify(f.calls.planner.at(-1).body.messages), /\{\{(?:get|add)(?:global)?var/);
+    }
+    assert.equal(f.calls.planner.length, 2);
+    assert.equal(f.calls.writer.length, 0);
+    assert.deepEqual(f.ctx.chatMetadata.variables, { rules: '酒馆原值' });
+    assert.deepEqual(f.ctx.extensionSettings.variables, { count: '50' });
+});
+
 test('prompt inspection reads actual context without a planner API request and becomes stale on input or preset edits', async t => {
     const f = await fixture(t, { settings: { baseUrl: '', model: '' } });
     await f.plugin.onAction('inspectPrompts');

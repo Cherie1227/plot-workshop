@@ -35,14 +35,17 @@ test('actual order and group switches control enabled states; off entries remain
 });
 
 test('known macros and variable-only definitions or reads are information, not conflicts', () => {
-    for (const content of ['{{user}}', '{{description}}', '{{getvar::rules}}', '{{getglobalvar::rules}}', '{{setvar::rules::请输出完整正文}}', '{{setvar::name::{{char}}}}', '定义变量 mood=平静。', 'const mood = "请输出完整正文";']) {
+    for (const content of ['{{user}}', '{{description}}', '{{getvar::rules}}', '{{getglobalvar::rules}}', '{{setvar::rules::请输出完整正文}}', '{{setvar::name::{{char}}}}',
+        '{{addvar::rules::请输出完整正文}}', '{{addglobalvar::rules::请输出完整正文}}', '{{incvar::n}}', '{{decglobalvar::n}}',
+        '{{hasvar rules}}', '{{getvar rules}}', '{{varexists:rules}}', '{{deletevar::rules}}', '{{flushglobalvar rules}}',
+        '定义变量 mood=平静。', 'const mood = "请输出完整正文";']) {
         const item = one('正文输出', content);
         assert.equal(item.status, 'info', content); assert.equal(item.needsReview, false, content);
     }
 });
 
 test('real output or style requirements beside dependencies still need review', () => {
-    for (const content of ['{{user}}\n请输出完整正文。', '{{setvar::mood::平静}}\n请输出完整正文。', '{{getvar::rules}}\n每轮输出本轮摘要。', '定义变量 mood=平静。请输出状态栏。', 'const mood = "平静";\n请输出状态栏。', '{{char}}\n字数不少于1500。']) {
+    for (const content of ['{{user}}\n请输出完整正文。', '{{setvar::mood::平静}}\n请输出完整正文。', '{{addvar::rules::保留}}\n请输出完整正文。', '{{getvar::rules}}\n每轮输出本轮摘要。', '定义变量 mood=平静。请输出状态栏。', 'const mood = "平静";\n请输出状态栏。', '{{char}}\n字数不少于1500。']) {
         assert.equal(one('规则', content).needsReview, true, content);
     }
     const unknown = one('规则', '{{setvar::a::1}}\n{{unrecognized_macro}}');
