@@ -237,7 +237,7 @@ test('bundled world background and closing constraints round-trip within the exi
     assert.ok(plan.plot.startsWith('世界背景：'));
     assert.ok(plan.plot.indexOf('本轮方向：') > plan.plot.indexOf('世界背景：'));
     assert.ok(plan.endState.startsWith('本轮状态：'));
-    assert.ok(plan.endState.indexOf('必须遵守：') > plan.endState.indexOf('本轮状态：'));
+    assert.ok(!plan.endState.includes('必须遵守'));
     assert.equal(plan.characters.length, 1);
     assert.equal(plan.segments.length, 1);
     assert.deepEqual(parseContent(plan.xml), plan);

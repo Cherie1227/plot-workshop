@@ -437,7 +437,7 @@ export function createWorkbench({ getState, onAction }) {
         el('p', 'pw-hint', '前面的启用条目：定义与追加'),
         el('pre', 'pw-analysis-text', '{{setvar::本轮规则::保留人物已知与未知的边界。}}\n{{addvar::本轮规则::\n关系变化须有本轮经历支撑。}}'),
         el('p', 'pw-hint', '后面的启用条目：引用'),
-        el('pre', 'pw-analysis-text', '本轮必须遵守：\n{{getvar::本轮规则}}'),
+        el('pre', 'pw-analysis-text', '本轮交接备注：\n{{getvar::本轮规则}}'),
         el('p', 'pw-hint', '支持 setvar/getvar、addvar、incvar/decvar、hasvar/deletevar 及对应 global 版本。addvar 追加文本或累加数值；赋值和追加本身不输出内容。'),
         el('p', 'pw-hint', '变量仅在本次规划编译内共享，每次重新展开都会重置，包括 global 版本；不读写酒馆的聊天变量。可在“本轮读取与用量”查看展开结果。'));
     presets.append(variableHelp);
