@@ -192,7 +192,20 @@
 @media(min-width:761px){.pw-workbench .pw-page-nav .pw-page-tab{font-size:16px;min-height:50px}}
 @media(max-width:350px){.pw-workbench .pw-page-nav .pw-page-tab{font-size:13px}}
 @media(max-height:600px) and (max-width:760px){.pw-workbench .pw-page-nav .pw-page-tab{min-height:44px}}
-.pw-workbench :is(.pw-checkbox-label,.pw-book-checkbox)>input[type="checkbox"]{appearance:auto;width:18px;height:18px;min-height:18px;max-height:18px;min-width:18px;max-width:18px;padding:0;margin:0;flex:0 0 18px;border:0;background:transparent;box-shadow:none!important;vertical-align:middle}
+/* Keep host checkbox skins off the visual mark; the native input remains tappable. */
+.pw-workbench :is(.pw-checkbox-label,.pw-book-checkbox){position:relative;min-height:44px;-webkit-tap-highlight-color:transparent}
+.pw-workbench :is(.pw-checkbox-label,.pw-book-checkbox)>input[type="checkbox"]{appearance:none!important;-webkit-appearance:none!important;position:absolute!important;inset:0!important;width:100%!important;height:100%!important;min-width:0!important;max-width:none!important;min-height:0!important;max-height:none!important;margin:0!important;padding:0!important;border:0!important;opacity:0!important;transform:none!important;clip-path:none!important;box-shadow:none!important;z-index:1;cursor:pointer}
+.pw-workbench .pw-checkbox-mark{display:inline-flex;align-items:center;justify-content:center;width:20px;min-width:20px;height:20px;flex:0 0 20px;border:1.5px solid var(--pw-muted);border-radius:5px;background:var(--pw-bg);color:var(--pw-bg);pointer-events:none}
+.pw-workbench .pw-checkbox-mark>svg{width:16px;height:16px;stroke-width:2.5;opacity:0}
+.pw-workbench input:checked+.pw-checkbox-mark{background:var(--pw-ink);border-color:var(--pw-ink)}
+.pw-workbench input:checked+.pw-checkbox-mark>svg{opacity:1}
+.pw-workbench input:focus-visible+.pw-checkbox-mark{outline:2px solid var(--pw-accent);outline-offset:3px}
+.pw-workbench input:disabled+.pw-checkbox-mark,.pw-workbench input:disabled~.pw-checkbox-state{opacity:.45}
+.pw-workbench .pw-checkbox-state{margin-left:auto;flex:0 0 auto;font-size:11px;line-height:1.5;color:var(--pw-muted);pointer-events:none;white-space:nowrap}
+.pw-workbench .pw-checkbox-on{display:none}
+.pw-workbench input:checked~.pw-checkbox-state .pw-checkbox-on{display:inline;color:var(--pw-ink)}
+.pw-workbench input:checked~.pw-checkbox-state .pw-checkbox-off{display:none}
+.pw-workbench .pw-switch>input[type="checkbox"]{appearance:none!important;-webkit-appearance:none!important;position:absolute!important;inset:0!important;width:44px!important;height:44px!important;min-width:0!important;min-height:0!important;max-width:none!important;max-height:none!important;margin:0!important;padding:0!important;opacity:0!important;transform:none!important;clip-path:none!important;box-shadow:none!important}
 
 /* Vespera material refinement: light glass, quieter rules, smaller type with more air. */
 .pw-workbench{

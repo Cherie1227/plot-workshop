@@ -24,6 +24,7 @@ const ICONS = {
     leaf: '<path d="m12 2 2.6 7.4L22 12l-7.4 2.6L12 22l-2.6-7.4L2 12l7.4-2.6z"/><circle cx="12" cy="12" r="2"/>',
     corner: '<path d="M2 22V12C2 5 5 2 12 2h10M6 18c0-7 4-12 12-12M4 12c3 1 5-1 4-4M12 4c1 3-1 5-4 4"/>',
     flourish: '<path d="M1 8h21m36 0h21M22 8c8-7 13-7 18 0-5 7-10 7-18 0m18 0c5-7 10-7 18 0-8 7-13 7-18 0M40 2v12"/>',
+    check: '<path d="m5 12 4 4L19 6"/>',
 };
 
 function el(tag, className, text) {
@@ -60,10 +61,25 @@ function field(label, input, hint) {
     return wrap;
 }
 function control(type, placeholder = '') {
-    const node = el('input', 'pw-input');
+    const node = el('input', type === 'checkbox' ? 'pw-checkbox-input' : 'pw-input');
     node.type = type;
     node.placeholder = placeholder;
     return node;
+}
+function decorateCheckbox(wrap, input, caption, showState = true) {
+    // Native checked state drives the mark, including reloads and failed-save rollback.
+    if (!input.hasAttribute('aria-label')) input.setAttribute('aria-label', caption.textContent);
+    const mark = el('span', 'pw-checkbox-mark');
+    mark.setAttribute('aria-hidden', 'true');
+    mark.append(icon('check'));
+    wrap.append(input, mark, caption);
+    if (showState) {
+        const state = el('span', 'pw-checkbox-state');
+        state.setAttribute('aria-hidden', 'true');
+        state.append(el('span', 'pw-checkbox-on', '已开启'), el('span', 'pw-checkbox-off', '未开启'));
+        wrap.append(state);
+    }
+    return wrap;
 }
 function setInputValue(node, value) {
     if (document.activeElement !== node && node.value !== String(value ?? '')) node.value = value ?? '';
@@ -664,7 +680,7 @@ export function createWorkbench({ getState, onAction }) {
     const rememberKeyLabel = el('label', 'pw-checkbox-label pw-remember-key');
     const rememberKey = control('checkbox'); rememberKey.setAttribute('aria-label', '在此浏览器记住密钥');
     rememberKey.addEventListener('change', () => saveAllSettings());
-    rememberKeyLabel.append(rememberKey, el('span', '', '在此浏览器记住密钥'));
+    decorateCheckbox(rememberKeyLabel, rememberKey, el('span', '', '在此浏览器记住密钥'));
     apiSection.append(rememberKeyLabel, el('p', 'pw-hint', '默认不记住。仅此浏览器保存，非加密存储，不随预设导出。'), modelActions, modelSearch, modelsSelect, modelSearchStatus, apiStatus, el('p', 'pw-hint', '测试会发送极短请求，可能计费。'));
     const advanced = el('details', 'pw-advanced');
     advanced.append(el('summary', '', '生成参数'));
@@ -688,7 +704,7 @@ export function createWorkbench({ getState, onAction }) {
     const autoLabel = el('label', 'pw-checkbox-label');
     const autoOnSend = control('checkbox');
     autoOnSend.addEventListener('change', () => { configDrafts.set('autoOnSend', autoOnSend.checked); settingsSaveStatus.textContent = '已修改，点击保存设置可确认当前配置。'; act('settings', { autoOnSend: autoOnSend.checked }); });
-    autoLabel.append(autoOnSend, el('span', '', '发送时自动规划'));
+    decorateCheckbox(autoLabel, autoOnSend, el('span', '', '发送时自动规划'));
     const modeHint = el('p', 'pw-hint');
     const modeField = field('规划时机', modeSelect); modeField.classList.add('pw-mode-field');
     modeSection.append(modeField, autoLabel, modeHint);
@@ -722,9 +738,9 @@ export function createWorkbench({ getState, onAction }) {
     const updateCheckedAt = el('p', 'pw-hint');
     const updateLocalNotice = el('p', 'pw-hint pw-update-notice'); updateLocalNotice.setAttribute('role', 'status');
     const updateAutoCheck = control('checkbox');
-    const updateAutoCheckLabel = el('label', 'pw-checkbox-label'); updateAutoCheckLabel.append(updateAutoCheck, el('span', '', '启动时检查更新'));
+    const updateAutoCheckLabel = decorateCheckbox(el('label', 'pw-checkbox-label'), updateAutoCheck, el('span', '', '启动时检查更新'));
     const updateAutoInstall = control('checkbox');
-    const updateAutoInstallLabel = el('label', 'pw-checkbox-label'); updateAutoInstallLabel.append(updateAutoInstall, el('span', '', '空闲时自动更新'));
+    const updateAutoInstallLabel = decorateCheckbox(el('label', 'pw-checkbox-label'), updateAutoInstall, el('span', '', '空闲时自动更新'));
     updateAutoCheck.addEventListener('change', () => act('updatePreferences', { autoCheck: updateAutoCheck.checked }));
     updateAutoInstall.addEventListener('change', () => act('updatePreferences', { autoInstall: updateAutoInstall.checked }));
     const checkUpdateButton = button('检查更新', () => act('checkUpdate'));
@@ -1362,7 +1378,7 @@ export function createWorkbench({ getState, onAction }) {
                     await act('extraWorldbooks', { names: [...names] });
                     checkbox.checked = (getState().extraWorldbooks || []).includes(book.name);
                 });
-                label.append(checkbox, el('span', 'pw-worldbook-name', book.name));
+                decorateCheckbox(label, checkbox, el('span', 'pw-worldbook-name', book.name), false);
                 if (book.unavailable || mountedNames.has(book.name)) label.append(el('span', 'pw-worldbook-label', book.unavailable ? '未找到' : '已挂载'));
                 return label;
             }) : [el('p', 'pw-hint', query ? '没有匹配的世界书。' : worldbookFilter.value === 'selected' ? '尚未选择额外世界书。' : '刷新目录后可选择额外世界书。')]));
