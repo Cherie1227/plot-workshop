@@ -778,6 +778,12 @@ export function createWorkbench({ getState, onAction }) {
     const detectedPath = el('p', 'pw-hint pw-detected-path');
     animaAdvanced.append(detectedPath);
     animaSection.append(animaDetection, el('p', 'pw-hint', '检测不会召回记忆或消耗保留次数'), animaAdvanced);
+    const extensionsSection = settingsSection('其他扩展');
+    const extLabel = el('label', 'pw-checkbox-label');
+    const readExtensionPrompts = control('checkbox');
+    readExtensionPrompts.addEventListener('change', () => { configDrafts.set('readExtensionPrompts', readExtensionPrompts.checked); settingsSaveStatus.textContent = '已修改，点击保存设置可确认当前配置。'; act('settings', { readExtensionPrompts: readExtensionPrompts.checked }); });
+    decorateCheckbox(extLabel, readExtensionPrompts, el('span', '', '读取其他扩展的注入内容'));
+    extensionsSection.append(extLabel, el('p', 'pw-hint', '开启后，伏笔、持续状态等其他扩展注入正文请求的内容会作为已成立资料进入本轮规划；仅规划端读取，注入与扩写仍由酒馆原生机制处理。'));
     const updateSection = settingsSection('扩展更新', true, settingsPanel);
     const updateVersion = el('p', 'pw-hint');
     const updatePhase = el('p', 'pw-update-phase');
@@ -993,6 +999,7 @@ export function createWorkbench({ getState, onAction }) {
         for (const [key, node] of Object.entries(settingsFields)) result[key] = node.type === 'checkbox' ? node.checked : node.type === 'number' ? (node.value === '' ? '' : Number(node.value)) : node.value;
         result.mode = modeSelect.value;
         result.autoOnSend = autoOnSend.checked;
+        result.readExtensionPrompts = readExtensionPrompts.checked;
         return result;
     }
     function savedAppearance() {
@@ -1064,6 +1071,7 @@ export function createWorkbench({ getState, onAction }) {
         const settings = state.settings || {};
         if (Object.entries(settingsFields).some(([key, node]) => node.type === 'checkbox' ? node.checked !== Boolean(settings[key]) : node.value !== String(settings[key] ?? ''))) return true;
         return modeSelect.value !== (settings.mode || 'review') || autoOnSend.checked !== Boolean(settings.autoOnSend)
+            || readExtensionPrompts.checked !== Boolean(settings.readExtensionPrompts)
             || keyField.value !== (state.apiKey || '');
     }
     async function performUpdate(type) {
@@ -1734,6 +1742,7 @@ export function createWorkbench({ getState, onAction }) {
         }
         if (!configDrafts.has('mode')) modeSelect.value = settings.mode || 'review';
         if (!configDrafts.has('autoOnSend')) autoOnSend.checked = Boolean(settings.autoOnSend);
+        if (!configDrafts.has('readExtensionPrompts')) readExtensionPrompts.checked = Boolean(settings.readExtensionPrompts);
         modeHint.textContent = settings.mode === 'auto' ? '大纲通过格式检查后直接交给主模型。' : settings.mode === 'manual' ? '只生成大纲，不自动注入主请求。' : '大纲生成后暂停，确认后再交给主模型。';
         generateButton.disabled = !enabled || isBlocked(state);
         generateButton.querySelector('span').textContent = state.busy ? '正在处理…' : state.animaChecking ? '检测记忆扩展…' : state.preview ? '载入示例大纲' : '生成大纲';

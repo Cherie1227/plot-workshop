@@ -1855,7 +1855,8 @@ test('prompt inspection reads actual context without a planner API request and b
     const inspection = f.plugin.state.promptInspection;
     assert.equal(inspection.tokenMethod, '按文本估算；非供应商计费');
     assert.ok(inspection.totalTokens > 0);
-    assert.deepEqual(inspection.sources.map(source => source.name), ['角色卡', '聊天历史', '世界书', 'Anima']);
+    assert.deepEqual(inspection.sources.map(source => source.name), ['角色卡', '聊天历史', '世界书', '其他扩展注入', 'Anima']);
+    assert.equal(inspection.sources.find(source => source.name === '其他扩展注入').status, '未开启');
     assert.match(inspection.sources.find(source => source.name === '聊天历史').detail, /1 条历史消息/);
     assert.match(inspection.sources.find(source => source.name === '世界书').status, /无命中/);
     assert.equal(inspection.entries.find(entry => entry.id === 'chatHistory').messages[0].content, '林澄: 他站在门口。');
@@ -1869,6 +1870,29 @@ test('prompt inspection reads actual context without a planner API request and b
     await f.plugin.onAction('editPrompt', { id: 'outline_dialogue', content: '修改对白规则。' });
     assert.equal(f.plugin.state.inspectionStale, true);
     assert.equal(f.calls.planner.length, 0);
+});
+
+test('other extension injections reach the planner only when the setting is enabled', async t => {
+    const off = await fixture(t);
+    off.ctx.setExtensionPrompt('story_clock', '伏笔：信封还没拆。', 1, 2, true, 0, null);
+    await off.plugin.onAction('generate', { input: off.input.value });
+    assert.ok(!JSON.stringify(off.calls.planner[0].body.messages).includes('其他扩展本轮注入'));
+    assert.equal(off.plugin.state.promptInspection.sources.find(source => source.name === '其他扩展注入').status, '未开启');
+
+    const on = await fixture(t, { settings: { readExtensionPrompts: true } });
+    on.ctx.setExtensionPrompt('story_clock', '伏笔：信封还没拆。', 1, 2, true, 0, null);
+    await on.plugin.onAction('generate', { input: on.input.value });
+    const messages = on.calls.planner[0].body.messages;
+    const note = messages.find(message => message.content.includes('【其他扩展本轮注入】'));
+    assert.ok(note);
+    assert.equal(note.role, 'system');
+    assert.ok(note.content.includes('伏笔：信封还没拆。'));
+    assert.ok(note.content.includes('story_clock'));
+    assert.ok(messages.indexOf(note) < messages.findIndex(message => message.content.includes('【本轮当前 user_input】')));
+    assert.equal(on.plugin.state.promptInspection.sources.find(source => source.name === '其他扩展注入').status, '已读取');
+    on.ctx.extensionPrompts.story_clock.value = '';
+    await on.plugin.onAction('inspectPrompts');
+    assert.equal(on.plugin.state.promptInspection.sources.find(source => source.name === '其他扩展注入').status, '已读取 · 无注入');
 });
 
 test('inspecting an unchanged generated plan preserves confirmation and preview exactly matches the sent planner messages', async t => {

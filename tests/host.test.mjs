@@ -223,6 +223,31 @@ test('planning-only WI scan restores author-note side effects on both success an
     }
 });
 
+test('extension notes stay out of planning context unless requested and exclude own injection', async () => {
+    const ctx = context();
+    ctx.setExtensionPrompt('story_clock', '伏笔：信封还没有拆。', 1, 2, true, 0, null);
+    ctx.setExtensionPrompt('ledger_state', '生理状态：平稳。', 1, 1, true, 0, null);
+    ctx.setExtensionPrompt(INJECTION_KEY, ' Vespera 自己的大纲注入 ', 1, 0, false, 0, null);
+    ctx.setExtensionPrompt('empty_note', '   ', 4, 0, true, 0, null);
+    const off = await collectPlanningContext(ctx, 'input');
+    assert.deepEqual(off.extensionNotes, []);
+    const on = await collectPlanningContext(ctx, 'input', { includeExtensionPrompts: true });
+    assert.deepEqual(on.extensionNotes.map(note => note.key), ['ledger_state', 'story_clock']);
+    assert.ok(on.extensionNotes[1].text.includes('伏笔：信封还没有拆。'));
+});
+
+test('extension notes are capped and the overflow is marked as truncated', async () => {
+    const ctx = context();
+    ctx.setExtensionPrompt('big_a', '甲'.repeat(15000), 1, 0, true, 0, null);
+    ctx.setExtensionPrompt('big_b', '乙'.repeat(6000), 1, 1, true, 0, null);
+    const result = await collectPlanningContext(ctx, 'input', { includeExtensionPrompts: true });
+    const total = result.extensionNotes.reduce((sum, note) => sum + note.text.length, 0);
+    assert.ok(total <= 20000 + '\n…（过长已截断）'.length);
+    assert.equal(result.extensionNotes.at(-1).truncated, true);
+    assert.match(result.extensionNotes.at(-1).text, /过长已截断/);
+    assert.equal(result.extensionNotes[0].text.length, 15000);
+});
+
 test('unsupported chats and missing worldbook API fail explicitly', async () => {
     const ctx = context();
     ctx.groupId = 'group';

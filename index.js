@@ -454,6 +454,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     }
     function compileRound(planningContext, recalled, target, extraBooks = { text: '', books: [] }) {
         const compiled = compilePreset(state.preset, { context: { ...planningContext,
+            extensionNotes: planningContext.extensionNotes ?? [],
             animaMemory: recalled.text, memoryParts: recalled.memoryParts, animaStatus: recalled.status === 'empty' ? 'empty' : 'success' }, targetLength: target });
         for (const book of extraBooks.books) {
             const contents = extraBooks.entries.filter(entry => entry.book === book.name).map(entry => `${entry.comment ? `${entry.comment}\n` : ''}${entry.content}`).join('\n\n');
@@ -465,6 +466,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             { name: '角色卡', status: planningContext.charDescription || planningContext.charPersonality || planningContext.scenario ? '已读取' : '已读取 · 空', detail: '以本轮酒馆角色卡与覆盖字段为准。' },
             { name: '聊天历史', status: planningContext.chatHistory.length ? '已读取' : '已读取 · 空', detail: `${planningContext.chatHistory.length} 条历史消息；当前输入单独提供。` },
             { name: '世界书', status: planningContext.worldInfoBefore || planningContext.worldInfoAfter ? '已读取' : '已读取 · 无命中', detail: '本轮干扫描命中的条目，未命中不等于读取失败。' },
+            { name: '其他扩展注入', status: state.settings.readExtensionPrompts === true ? (planningContext.extensionNotes?.length ? '已读取' : '已读取 · 无注入') : '未开启', detail: state.settings.readExtensionPrompts === true ? (planningContext.extensionNotes?.length ? `${planningContext.extensionNotes.length} 项其他扩展的注入内容，按正文请求中的位置与深度排序。` : '当前没有其他扩展注入内容。') : '在配置页开启后，伏笔、状态等其他扩展的注入内容会进入规划资料。' },
             { name: 'Anima', status: recalled.retrievalSkipped === 'no_sources' ? '已读取 · 暂无召回来源' : recalled.status === 'empty' ? '已读取 · 无相关记忆' : '已读取',
                 detail: recalled.retrievalSkipped === 'no_sources' ? '未绑定召回库，已读取本地摘要与状态；使用当前聊天资料继续规划。' : recalled.reusedForRound ? '复用本轮有效召回。' : '召回完成，沿用 Anima 的记忆保留规则。' },
             ...extraBooks.books.map(book => ({ name: `额外世界书 · ${book.name}`, status: book.count ? '已读取' : '已读取 · 空', detail: `${book.count} 个启用条目。仅本轮规划使用。` })),
@@ -681,7 +683,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         planningStatus('正在读取角色卡与世界书…');
         planningRevision = worldRevision;
         planningAnimaConfig = animaConfigSignature();
-        const planningContext = await collectPlanningContext(getContext(), userInput, { inputAlreadyInChat: committed, maxContext });
+        const planningContext = await collectPlanningContext(getContext(), userInput, { inputAlreadyInChat: committed, maxContext, includeExtensionPrompts: state.settings.readExtensionPrompts === true });
         check();
         let extraBooks = { text: '', books: [], entries: [] };
         if (state.extraWorldbooks.length) {
