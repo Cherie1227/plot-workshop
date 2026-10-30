@@ -14,7 +14,7 @@ async function until(predicate, label) {
 }
 
 async function fixture(t, { settings = {}, saved, fetchMode = 'success', api, detectAnima, observerGate, recallAnima, host = {}, updaterFactory,
-    viewState = { open: false, unsaved: false }, reloadPage, rewriteMode = 'success', plannerMessage } = {}) {
+    viewState = { open: false, unsaved: false }, reloadPage, rewriteMode = 'success', plannerMessage, dynamicCleanupProof } = {}) {
     const prior = { document: globalThis.document, sessionStorage: globalThis.sessionStorage, localStorage: globalThis.localStorage, SillyTavern: globalThis.SillyTavern };
     const input = { value: '她递出信。', dispatchEvent() {} };
     const storage = new Map();
@@ -61,9 +61,11 @@ async function fixture(t, { settings = {}, saved, fetchMode = 'success', api, de
         async installAnimaObserver(options) { calls.observers.push(options); if (observerGate) await observerGate(options); }, beginAnimaGeneration() { return 'generation-token'; }, clearAnimaGeneration() {},
         async recallAnima(options) { calls.recalled++; calls.recalls.push(options); return recallAnima ? recallAnima(options, calls.recalled) : { text: '之前约定不擅自拆信。', status: 'success', source: 'fixture-memory' }; },
         skipNextAnimaRecall() { return () => {}; }, invalidateAnimaRoundCache() { calls.invalidated++; },
+        getAnimaDynamicCleanupProof: () => dynamicCleanupProof ? structuredClone(dynamicCleanupProof) : null,
     };
     const fetchImpl = async (url, options) => {
         calls.planner.push({ url, options, body: JSON.parse(options.body) });
+        if (typeof fetchMode === 'function') return fetchMode({ url, options, calls });
         if (fetchMode === 'error') return new Response('server private-key details', { status: 503 });
         if (fetchMode === 'pending') return new Promise((_, reject) => options.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true }));
         return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: plannerMessage ?? { content: xml } }] }));
@@ -438,8 +440,79 @@ test('native regenerate reuse policy uses this turn outline and plans when there
         assert.equal(f.calls.recalled, recalls + (hasPlan ? 0 : 1));
         assert.equal(f.input.value, '保留草稿'); assert.equal(f.plugin.state.input, '她递出信。');
         assert.equal(f.ctx.chat.length, 3); assert.equal(f.calls.writer.length, hasPlan ? 2 : 1);
+        assert.equal(f.plugin.state.logs.filter(entry => entry.event === 'planner.reuse.skipped').length, hasPlan ? 0 : 1);
+        if (!hasPlan) assert.equal(f.plugin.state.logs.find(entry => entry.event === 'planner.reuse.skipped').details.code, 'REUSE_NO_CACHE');
         if (!hasPlan) { assert.equal(f.calls.recalls[0].generationToken, undefined); assert.equal(f.calls.recalls[0].settings.inputAlreadyInChat, true); }
     });
+});
+
+test('native regenerate reuses an outline after display-only preset changes', async t => {
+    const changes = {
+        'group name': f => f.plugin.onAction('renamePromptGroup', { id: 'outline_voice', name: '显示用分组名称' }),
+        'prompt name': f => f.plugin.onAction('editPrompt', { id: 'outline_dialogue', name: '显示用条目名称' }),
+        'preset name': f => f.plugin.onAction('presetSave', { name: '显示用预设名称' }),
+        'display metadata': f => {
+            f.plugin.state.preset.warnings.push('仅显示的提示');
+            f.plugin.state.preset.importAdvice = { disable: [], review: [{ id: 'outline_dialogue', reason: '仅显示的导入建议' }] };
+            f.plugin.state.preset.groups[0].collapsed = !f.plugin.state.preset.groups[0].collapsed;
+            f.plugin.state.preset.groups[0].order += 10;
+        },
+    };
+    for (const [name, change] of Object.entries(changes)) await t.test(name, async subtest => {
+        const f = await fixture(subtest, { settings: { mode: 'auto', autoOnSend: true, regeneratePolicy: 'reuse' } });
+        await f.ctx.generate('normal');
+        const priorXml = f.plugin.state.plan.xml;
+        await change(f); await f.ctx.generate('regenerate');
+        assert.equal(f.calls.planner.length, 1); assert.equal(f.calls.recalled, 1); assert.equal(f.calls.writer.length, 2);
+        assert.ok(f.calls.writer[1].prompt.includes(priorXml));
+        assert.ok(f.plugin.state.logs.some(entry => entry.event === 'planner.reused'));
+        assert.equal(f.plugin.state.logs.some(entry => entry.event === 'planner.reuse.skipped'), false);
+    });
+});
+
+test('native regenerate still replans after prompt, switch, pace or request settings change', async t => {
+    const changes = {
+        content: f => f.plugin.onAction('editPrompt', { id: 'outline_dialogue', content: '对白须简短并回应上一句。' }),
+        role: f => f.plugin.onAction('editPrompt', { id: 'outline_dialogue', role: 'user' }),
+        'prompt switch': f => f.plugin.onAction('promptToggle', { identifier: 'outline_dialogue', enabled: false }),
+        'group switch': f => f.plugin.onAction('groupToggle', { id: 'outline_voice', enabled: false }),
+        'group mapping': f => f.plugin.onAction('editPrompt', { id: 'outline_dialogue', groupId: 'outline_character' }),
+        'prompt order': f => {
+            const items = f.plugin.state.preset.order.filter(item => f.plugin.state.preset.promptGroups[item.identifier] === 'outline_voice');
+            return f.plugin.onAction('movePrompt', { id: items.at(-1).identifier, beforeId: items[0].identifier, groupId: 'outline_voice' });
+        },
+        'story pace': f => f.plugin.onAction('settings', { storyPace: 'fast' }),
+        'relationship pace': f => f.plugin.onAction('settings', { relationshipPace: 'slow' }),
+        'output limit': f => f.plugin.onAction('settings', { maxTokens: '60000' }),
+        stream: f => f.plugin.onAction('settings', { stream: false }),
+    };
+    for (const [name, change] of Object.entries(changes)) await t.test(name, async subtest => {
+        const f = await fixture(subtest, { settings: { mode: 'auto', autoOnSend: true, regeneratePolicy: 'reuse' } });
+        await f.ctx.generate('normal'); await change(f); await f.ctx.generate('regenerate');
+        assert.equal(f.calls.planner.length, 2); assert.equal(f.calls.recalled, 1); assert.equal(f.calls.writer.length, 2);
+        assert.equal(f.plugin.state.logs.find(entry => entry.event === 'planner.reuse.skipped')?.details.code, 'REUSE_CONFIG_CHANGED');
+    });
+});
+
+test('a failed native regeneration fallback identifies the previous visible outline and its reason', async t => {
+    let statusDuringRequest = '', f;
+    f = await fixture(t, { settings: { mode: 'auto', autoOnSend: true, regeneratePolicy: 'reuse' }, fetchMode: ({ calls }) => {
+        if (calls.planner.length === 1) return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: xml } }] }));
+        statusDuringRequest = f.plugin.state.status;
+        return new Response('private relay details', { status: 400 });
+    } });
+    await f.ctx.generate('normal');
+    const priorXml = f.plugin.state.plan.xml;
+    await f.reload(); await f.ctx.generate('regenerate');
+    assert.equal(f.calls.planner.length, 2); assert.equal(f.calls.writer.length, 1);
+    assert.equal(f.plugin.state.plan.xml, priorXml);
+    assert.match(statusDuringRequest, /当前页面没有有效的本轮大纲与记忆缓存.*重新生成大纲/);
+    assert.match(f.plugin.state.status, /HTTP 400/);
+    assert.match(f.plugin.state.status, /上次成功的大纲.*仅供查看.*本次未复用/);
+    assert.doesNotMatch(f.plugin.state.status, /private relay details/);
+    assert.equal(f.plugin.state.logs.find(entry => entry.event === 'planner.reuse.skipped')?.details.code, 'REUSE_NO_CACHE');
+    assert.equal(f.plugin.state.logs.some(entry => entry.event === 'planner.reused'), false);
+    assert.equal(f.ctx.extensionPrompts[INJECTION_KEY], undefined);
 });
 
 test('changed planning content requires a new outline but can reuse unchanged turn memory', async t => {
@@ -457,6 +530,140 @@ test('changed worldbook requires new memory and a new outline for native regener
     await f.ctx.generate('regenerate');
     assert.equal(f.calls.planner.length, 2); assert.equal(f.calls.recalled, 2);
     assert.equal(f.calls.recalls[1].generationToken, undefined);
+    assert.equal(f.plugin.state.logs.find(entry => entry.event === 'planner.reuse.skipped')?.details.code, 'REUSE_WORLDBOOK_CHANGED');
+});
+
+test('verified Anima post-generation container cleanup preserves native regeneration reuse', async t => {
+    const names = ['[ANIMA_Chat_History_Container]', '[ANIMA_Knowledge_Container]'];
+    const proof = { chatId: 'chat-a', bookName: 'bound-book', entries: names.map((name, index) => ({ uid: index + 1, name, content: `verified-memory-${index}` })) };
+    const book = { entries: Object.fromEntries(proof.entries.map(entry => [String(entry.uid), { uid: entry.uid, comment: entry.name, content: entry.content,
+        disable: false, key: [], constant: true, order: 100, position: 4, extensions: { depth: 4 } }])), originalData: { preserved: true } };
+    book.entries['3'] = { uid: 3, comment: '永久规则', content: '不可改动的世界规则', disable: false };
+    let f;
+    f = await fixture(t, { settings: { mode: 'auto', autoOnSend: true, regeneratePolicy: 'reuse' }, dynamicCleanupProof: proof,
+        recallAnima: async () => { await f.events.emit('WORLDINFO_UPDATED', 'bound-book', structuredClone(book)); return { text: '本轮记忆', status: 'success', source: 'fixture' }; } });
+    await f.ctx.generate('normal');
+    // Anima runs these callbacks after GENERATION_ENDED, outside recall/injection.
+    for (const uid of ['1', '2']) { book.entries[uid].content = ''; await f.events.emit('WORLDINFO_UPDATED', 'bound-book', structuredClone(book)); }
+    assert.equal(f.calls.invalidated, 2, 'Only the initial book event and normal generation end invalidate Anima round cache');
+    await f.ctx.generate('regenerate');
+    assert.equal(f.calls.planner.length, 1); assert.equal(f.calls.recalled, 1); assert.equal(f.calls.writer.length, 2);
+    assert.match(f.calls.writer[1].prompt, /本轮记忆/);
+    assert.equal(f.calls.writer[1].prompt, f.calls.writer[0].prompt, 'Frozen memory remains in the writer injection after worldbook cleanup');
+    assert.equal(f.plugin.state.logs.filter(entry => entry.event === 'anima.containers.cleaned').length, 2);
+    assert.equal(f.plugin.state.logs.some(entry => entry.event === 'planner.reuse.skipped'), false);
+    assert.doesNotMatch(JSON.stringify(f.plugin.state.logs), /verified-memory|不可改动的世界规则/);
+    // A same-round replan can reuse recalled memory after cleanup too.
+    await f.plugin.onAction('settings', { storyPace: 'fast' }); await f.ctx.generate('regenerate');
+    await f.events.emit('WORLDINFO_UPDATED', 'bound-book', structuredClone(book));
+    await f.ctx.generate('regenerate');
+    assert.equal(f.calls.planner.length, 2); assert.equal(f.calls.recalled, 1); assert.equal(f.calls.writer.length, 4);
+});
+
+test('official raw cache read arms cleanup before debounced WORLDINFO_UPDATED arrives', async t => {
+    for (const timing of ['during planner', 'after generation', 'combined cleanup']) await t.test(timing, async subtest => {
+        const proof = { chatId: 'chat-a', bookName: 'bound-book', entries: [
+            { uid: 1, name: '[ANIMA_Chat_History_Container]', content: 'verified-chat' },
+            { uid: 2, name: '[ANIMA_Knowledge_Container]', content: 'verified-knowledge' },
+        ] };
+        const book = { entries: Object.fromEntries(proof.entries.map(entry => [entry.uid, { uid: entry.uid, comment: entry.name, content: entry.content,
+            key: entry.uid === 2 ? ['rag_knowledge'] : [], disable: false, order: 100 }])), originalData: { unchanged: true } };
+        let reads = 0, f;
+        f = await fixture(subtest, { settings: { mode: 'auto', autoOnSend: true, regeneratePolicy: 'reuse' }, dynamicCleanupProof: proof,
+            host: { async loadWorldInfo(name) { assert.equal(name, 'bound-book'); reads++; return structuredClone(book); } },
+            recallAnima: async () => ({ text: '本轮已读取的完整记忆', status: 'success', source: 'fixture' }),
+            fetchMode: async () => {
+                if (timing === 'during planner') await f.events.emit('WORLDINFO_UPDATED', 'bound-book', structuredClone(book));
+                return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: xml } }] }));
+            } });
+        await f.ctx.generate('normal');
+        assert.equal(f.calls.writer.length, 1, 'Delayed initial save cannot interrupt the first plan');
+        if (timing === 'after generation') await f.events.emit('WORLDINFO_UPDATED', 'bound-book', structuredClone(book));
+        // Two helper updates can be flushed separately or coalesced by ST.
+        book.entries[1].content = '';
+        if (timing !== 'combined cleanup') await f.events.emit('WORLDINFO_UPDATED', 'bound-book', structuredClone(book));
+        book.entries[2].content = '';
+        await f.events.emit('WORLDINFO_UPDATED', 'bound-book', structuredClone(book));
+        await f.ctx.generate('regenerate');
+        assert.equal(reads, 1); assert.equal(f.calls.planner.length, 1); assert.equal(f.calls.recalled, 1); assert.equal(f.calls.writer.length, 2);
+        assert.equal(f.calls.writer[1].prompt, f.calls.writer[0].prompt);
+        assert.equal(f.plugin.state.logs.some(entry => entry.event === 'planner.reuse.skipped'), false);
+    });
+});
+
+test('cancellation while loading a raw cleanup baseline cannot resume planning', async t => {
+    const proof = { chatId: 'chat-a', bookName: 'bound-book', entries: [{ uid: 1, name: '[ANIMA_Chat_History_Container]', content: 'verified' }] };
+    let resolveRead;
+    const f = await fixture(t, { dynamicCleanupProof: proof,
+        host: { loadWorldInfo: () => new Promise(resolve => { resolveRead = resolve; }) } });
+    const pending = f.plugin.onAction('generate', { input: f.input.value });
+    await until(() => resolveRead, 'raw cache read');
+    await f.plugin.onAction('cancel');
+    resolveRead({ entries: { 1: { uid: 1, comment: proof.entries[0].name, content: 'verified' } } });
+    await pending;
+    assert.equal(f.calls.planner.length, 0); assert.equal(f.calls.writer.length, 0); assert.equal(f.plugin.state.busy, false);
+});
+
+test('empty and no-source recall accept identical delayed saves but still invalidate changed data', async t => {
+    for (const retrievalSkipped of [null, 'no_sources']) await t.test(retrievalSkipped || 'genuine empty', async subtest => {
+        const proof = { chatId: 'chat-a', bookName: 'bound-book', entries: [] };
+        const book = { entries: {
+            1: { uid: 1, comment: '[ANIMA_Chat_History_Container]', content: '', disable: false },
+            2: { uid: 2, comment: '永久规则', content: '原规则' },
+        } };
+        let f;
+        f = await fixture(subtest, { settings: { mode: 'auto', autoOnSend: true, regeneratePolicy: 'reuse' }, dynamicCleanupProof: proof,
+            host: { loadWorldInfo: async () => structuredClone(book) },
+            recallAnima: async () => ({ text: '', status: 'empty', source: 'fixture', retrievalSkipped }),
+            fetchMode: async () => {
+                await f.events.emit('WORLDINFO_UPDATED', 'bound-book', structuredClone(book));
+                return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: xml } }] }));
+            } });
+        await f.ctx.generate('normal'); await f.ctx.generate('regenerate');
+        assert.equal(f.calls.planner.length, 1); assert.equal(f.calls.recalled, 1); assert.equal(f.calls.writer.length, 2);
+        book.entries[2].content = '新规则';
+        await f.events.emit('WORLDINFO_UPDATED', 'bound-book', structuredClone(book));
+        await f.ctx.generate('regenerate');
+        assert.equal(f.calls.planner.length, 2); assert.equal(f.calls.recalled, 2); assert.equal(f.calls.writer.length, 3);
+        assert.equal(f.plugin.state.logs.find(entry => entry.event === 'planner.reuse.skipped')?.details.code, 'REUSE_WORLDBOOK_CHANGED');
+    });
+});
+
+test('worldbook changes outside proven Anima content cleanup still invalidate regeneration reuse', async t => {
+    const variants = ['ordinary rule', 'new rule', 'permanent summary', 'status entry', 'book metadata', 'container settings', 'nonempty replacement', 'same-name fake entry', 'no payload', 'worldbook settings', 'changed user input'];
+    for (const variant of variants) await t.test(variant, async subtest => {
+        const name = '[ANIMA_Chat_History_Container]';
+        const proof = { chatId: 'chat-a', bookName: 'bound-book', entries: [{ uid: 1, name, content: 'verified-memory' }] };
+        const book = { entries: {
+            1: { uid: 1, comment: name, content: 'verified-memory', disable: false, order: 100 },
+            2: { uid: 2, comment: '永久规则', content: '原规则' },
+            3: { uid: 3, comment: '永久摘要', content: '原摘要', extensions: { createdBy: 'anima_summary' } },
+            4: { uid: 4, comment: '[anima_status]', content: '原状态' },
+            5: { uid: 5, comment: name, content: '同名但未经证明的内容' },
+        }, originalData: { preserved: true } };
+        let f;
+        f = await fixture(subtest, { settings: { mode: 'auto', autoOnSend: true, regeneratePolicy: 'reuse' }, dynamicCleanupProof: proof,
+            recallAnima: async () => { await f.events.emit('WORLDINFO_UPDATED', 'bound-book', structuredClone(book)); return { text: '本轮记忆', status: 'success', source: 'fixture' }; } });
+        await f.ctx.generate('normal');
+        const changed = structuredClone(book);
+        changed.entries[1].content = '';
+        if (variant === 'ordinary rule') changed.entries[2].content = '新规则';
+        if (variant === 'new rule') changed.entries[6] = { uid: 6, comment: '新增规则', content: '新资料' };
+        if (variant === 'permanent summary') changed.entries[3].content = '新摘要';
+        if (variant === 'status entry') changed.entries[4].content = '新状态';
+        if (variant === 'book metadata') changed.originalData.preserved = false;
+        if (variant === 'container settings') changed.entries[1].order = 200;
+        if (variant === 'nonempty replacement') changed.entries[1].content = '另一段非空内容';
+        if (variant === 'same-name fake entry') { changed.entries[1].content = 'verified-memory'; changed.entries[5].content = ''; }
+        if (variant === 'changed user input') f.ctx.chat.at(-2).mes = '已修改的本轮输入';
+        else if (variant === 'worldbook settings') await f.events.emit('WORLDINFO_SETTINGS_UPDATED');
+        else await f.events.emit('WORLDINFO_UPDATED', 'bound-book', variant === 'no payload' ? undefined : changed);
+        await f.ctx.generate('regenerate');
+        assert.equal(f.calls.planner.length, 2); assert.equal(f.calls.recalled, 2); assert.equal(f.calls.writer.length, 2);
+        assert.equal(f.plugin.state.logs.find(entry => entry.event === 'planner.reuse.skipped')?.details.code,
+            variant === 'changed user input' ? 'REUSE_CONTEXT_CHANGED' : 'REUSE_WORLDBOOK_CHANGED');
+        assert.equal(f.plugin.state.logs.some(entry => entry.event === 'anima.containers.cleaned'), false);
+    });
 });
 
 test('native regenerate obeys review mode even when reusing an outline', async t => {
@@ -1027,6 +1234,25 @@ test('stream mode defaults on, saves per profile and follows all completion acti
     assert.deepEqual(diagnosed, [false, true]);
 });
 
+test('story pace and relationship pace save independently and reach planner and writer without a word target', async t => {
+    const f = await fixture(t);
+    await f.plugin.onAction('saveSettings', { settings: { storyPace: 'fast', relationshipPace: 'slow', minWords: '', maxWords: '', mode: 'auto' }, rememberKey: false });
+    assert.equal(f.ctx.extensionSettings.plot_workshop.settings.storyPace, 'fast');
+    assert.equal(f.ctx.extensionSettings.plot_workshop.settings.relationshipPace, 'slow');
+    await f.reload();
+    assert.equal(f.plugin.state.settings.storyPace, 'fast');
+    assert.equal(f.plugin.state.settings.relationshipPace, 'slow');
+    assert.equal(f.plugin.state.settings.minWords, '');
+    await f.plugin.onAction('generate', { input: f.input.value });
+    const planner = f.calls.planner[0].body.messages.map(message => message.content).join('\n');
+    assert.match(planner, /本轮剧情推进：快/);
+    assert.match(planner, /本轮感情推进：慢/);
+    assert.equal(f.calls.writer.length, 1);
+    assert.match(f.calls.writer[0].prompt, /本轮剧情推进：快/);
+    assert.match(f.calls.writer[0].prompt, /本轮感情推进：慢/);
+    assert.match(f.calls.writer[0].prompt, /不固定事件数/);
+});
+
 test('API profiles migrate old connection settings, save explicitly, and keep independent secrets in memory', async t => {
     const f = await fixture(t);
     const first = f.plugin.state.activeApiProfileId;
@@ -1515,7 +1741,7 @@ test('host preset import creates a planning copy, preserves enabled choices and 
     assert.equal(f.plugin.state.preset.prompts.find(item => item.identifier === 'host-rule').content, 'ORIGINAL_HOST_PROMPT');
     assert.equal(f.plugin.state.preset.order.find(item => item.identifier === 'host-rule').enabled, true);
     assert.ok(f.plugin.state.preset.prompts.some(item => item.identifier === 'outline_output'));
-    assert.ok(f.plugin.state.importReview.items.some(item => item.id === 'host-rule' && item.kind === 'review'));
+    assert.ok(f.plugin.state.importReview.items.some(item => item.id === 'host-rule' && item.kind === 'prompt' && item.status === 'review' && item.needsReview));
     assert.deepEqual(host.presets[0], original);
     assert.equal(f.plugin.state.activeApiProfileId, oldApi);
     assert.equal(f.ctx.mainApi, 'textgenerationwebui'); assert.equal(JSON.stringify(f.ctx.chatCompletionSettings), main);

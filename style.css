@@ -124,7 +124,23 @@
 .pw-inspection-entries{margin-top:14px}.pw-inspection-entry{border-top:1px solid var(--pw-line-fine)}.pw-inspection-entry>summary{min-height:48px;padding:10px 0;cursor:pointer;overflow-wrap:anywhere}
 .pw-inspection-entry-meta{display:block;color:var(--pw-muted);font-size:var(--pw-meta-size)}.pw-inspection-role{color:var(--pw-accent);font-size:var(--pw-meta-size)}
 .pw-inspection-text{white-space:pre-wrap;overflow-wrap:anywhere;max-height:45dvh;overflow:auto;font:var(--pw-font-size)/var(--pw-line-height) var(--pw-font);color:var(--pw-ink);background:var(--pw-inset);padding:12px;border:1px solid var(--pw-line);border-radius:var(--pw-radius);margin:6px 0 14px}
-.pw-import-review>.pw-hint+.pw-hint{margin-top:12px}.pw-import-review-item{padding:12px 0;border-top:1px solid var(--pw-line-fine)}.pw-review-edit{width:100%;white-space:normal!important;text-align:left;justify-content:flex-start!important}.pw-import-review-item>.pw-hint{margin-top:8px}
+.pw-import-review-toolbar{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:12px 0 8px;flex-wrap:wrap}
+.pw-import-review-count{margin:0!important;font-size:var(--pw-meta-size);color:var(--pw-accent);font-variant-numeric:tabular-nums}
+.pw-import-review-filters{display:flex;gap:4px}.pw-import-review-filters .pw-button{min-height:36px;padding:4px 12px;font-size:var(--pw-meta-size)}
+.pw-import-review-filters .pw-button[aria-pressed=true]{color:var(--pw-accent);border-color:var(--pw-accent);background:var(--pw-accent-soft)}
+.pw-import-adjustment{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-top:10px}.pw-import-adjustment[hidden]{display:none}
+.pw-import-adjustment .pw-hint{margin:0!important}.pw-import-adjustment .pw-button{min-height:36px;font-size:var(--pw-meta-size)}
+.pw-import-review-items{margin-top:12px}.pw-review-group{border-top:1px solid var(--pw-line-fine)}
+.pw-review-group-summary{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:46px;cursor:pointer;list-style:none;font-size:var(--pw-meta-size)}
+.pw-review-group-summary::-webkit-details-marker{display:none}.pw-review-group-name{display:flex;gap:7px;align-items:center;min-width:0;flex:1}
+.pw-review-group-name>span{overflow-wrap:anywhere}.pw-review-group-name svg{width:12px;height:12px;flex-shrink:0;color:var(--pw-accent);transition:transform .14s}
+.pw-review-group[open]>.pw-review-group-summary svg{transform:rotate(90deg)}.pw-review-group-count{font-size:11px;color:var(--pw-muted);white-space:nowrap;font-variant-numeric:tabular-nums}
+.pw-import-review-item{padding:8px 0 10px;border-top:1px solid var(--pw-line-fine)}.pw-review-item-heading{display:flex;align-items:center;gap:6px;min-width:0}
+.pw-workbench .pw-review-edit{flex:1;min-width:0;min-height:40px;padding:5px 4px;border:0;background:transparent;box-shadow:none;white-space:normal!important;text-align:left;justify-content:flex-start!important;font-size:var(--pw-meta-size)}
+.pw-review-edit>span{overflow-wrap:anywhere}.pw-review-edit svg{flex-shrink:0}.pw-review-item-status{font-size:11px;white-space:nowrap;color:var(--pw-muted)}
+.pw-import-review-item[data-status=review] .pw-review-item-status{color:var(--pw-accent)}.pw-import-review-item>.pw-hint{margin:0 0 0 4px!important;overflow-wrap:anywhere}
+.pw-import-review-help{border-top:1px solid var(--pw-line-fine);margin-top:12px;padding-top:6px}.pw-import-review-help>summary{min-height:36px;display:flex;align-items:center;cursor:pointer;font-size:var(--pw-meta-size);color:var(--pw-muted)}
+.pw-import-review-help .pw-hint{margin-top:6px!important}.pw-review-empty{font-size:var(--pw-meta-size);color:var(--pw-muted);padding:12px 0}
 .pw-worldbooks-heading>.pw-button{margin-left:auto;padding:8px 10px}.pw-book-section{padding:18px;margin-top:20px}.pw-book-section h3{font-size:18px;margin-bottom:16px}
 .pw-mounted-books,.pw-extra-books{display:flex;flex-direction:column;gap:10px}.pw-book-section>.pw-hint{margin-top:16px}
 .pw-mounted-book,.pw-book-checkbox{display:flex;align-items:center;gap:12px;min-height:64px;padding:12px;border:1px solid var(--pw-line);border-radius:var(--pw-radius);background:var(--pw-card);overflow-wrap:anywhere}

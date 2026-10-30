@@ -260,6 +260,26 @@ async function test(name, fn){await fn();passed++;process.stdout.write(`PASS ${n
  await test('changed input creates a new recall, no arbitrary old payload fallback',async()=>{const f=await fixture();await f.recall();await f.recall({userInput:'更改后的输入'});assert.equal(f.data.queryCalls,2);});
  await test('manual query refreshes stale native worldbook containers before return',async()=>{const f=await fixture();f.data.entries=[{name:'[ANIMA_Chat_History_Container]',content:'上轮记忆',enabled:true},{name:'[ANIMA_Knowledge_Container]',content:'上轮知识',enabled:true}];f.data.queryResult={merged_chat_results:[{text:'本轮重要记忆',is_echo:true}],merged_kb_results:[{text:'本轮知识',doc_name:'设定'}]};const r=await f.recall();assert.equal(r.dynamicContainersReady,true);assert.equal(f.data.entries[0].content,'本轮重要记忆');assert.equal(f.data.entries[1].content,'以下是相关设定：\n[Source: 设定]\n本轮知识');assert.equal(f.data.containerWrites,2);await f.recall();assert.equal(f.data.containerWrites,2);assert.equal(f.data.queryCalls,1);});
  await test('genuine empty retrieval clears only old dynamic content',async()=>{const f=await fixture();f.data.entries=[{name:'[ANIMA_Chat_History_Container]',content:'旧记忆',enabled:true},{name:'[ANIMA_Knowledge_Container]',content:'旧知识',enabled:true},{name:'普通条目',content:'保留'}];await f.recall();assert.equal(f.data.entries[0].content,'');assert.equal(f.data.entries[1].content,'');assert.equal(f.data.entries[2].content,'保留');});
+ await test('cleanup proof contains only unique container identities verified against this recall',async()=>{
+   const f=await fixture();
+   f.data.entries=[{uid:7,name:'[ANIMA_Chat_History_Container]',content:'旧记忆',enabled:true},{uid:9,name:'[ANIMA_Knowledge_Container]',content:'旧知识',enabled:true}];
+   f.data.queryResult={merged_chat_results:[{text:'本轮重要记忆'}],merged_kb_results:[{text:'本轮知识',doc_name:'设定'}]};
+   await f.recall();
+   const proof=JSON.parse(JSON.stringify(f.api.getAnimaDynamicCleanupProof()));
+   assert.equal(proof.chatId,'chat-A');assert.equal(proof.bookName,'book');
+   assert.deepEqual(proof.entries,f.data.entries.map(({uid,name,content})=>({uid,name,content})));
+   proof.entries[0].content='不能修改内部证明';
+   assert.equal(f.api.getAnimaDynamicCleanupProof().entries[0].content,'本轮重要记忆');
+ });
+ await test('same-name entries without a unique verified UID cannot authorize cleanup',async()=>{
+   for(const entries of [
+     [{name:'[ANIMA_Chat_History_Container]',content:'本轮记忆',enabled:true}],
+     [{uid:1,name:'[ANIMA_Chat_History_Container]',content:'本轮记忆',enabled:true},{uid:2,name:'[ANIMA_Chat_History_Container]',content:'同名假条目',enabled:true}],
+   ]){
+     const f=await fixture();f.data.entries=entries;f.data.queryResult={merged_chat_results:[{text:'本轮记忆'}],merged_kb_results:[]};
+     await f.recall();assert.equal(f.api.getAnimaDynamicCleanupProof().entries.length,0);
+   }
+ });
  await test('failed container write stops planning but successful recall is retained',async()=>{const f=await fixture();f.data.queryResult={merged_chat_results:[{text:'新记忆'}],merged_kb_results:[]};f.data.writeHook=()=>{throw new Error('failure');};await assert.rejects(f.recall(),e=>e.code==='ANIMA_CONTAINER_WRITE');delete f.data.writeHook;await f.recall();assert.equal(f.data.queryCalls,1);assert.equal(f.data.entries[0].content,'新记忆');});
  await test('silent official writer failure is detected by readback',async()=>{const f=await fixture();f.data.queryResult={merged_chat_results:[{text:'新记忆'}],merged_kb_results:[]};f.data.writeHook=()=>{};await assert.rejects(f.recall(),e=>e.code==='ANIMA_CONTAINER_VERIFY');});
  await test('context switch during container write stops later writes and planning',async()=>{const f=await fixture();f.data.queryResult={merged_chat_results:[{text:'新记忆'}],merged_kb_results:[{text:'知识'}]};f.data.writeHook=()=>{f.data.context.chatId='different';};await assert.rejects(f.recall(),e=>e.code==='ANIMA_CONTEXT_CHANGED');assert.equal(f.data.containerWrites,1);});

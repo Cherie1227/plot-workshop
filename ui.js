@@ -1,5 +1,6 @@
 import { createWorkshopTools } from './tools-ui.js';
 import { estimatePromptText } from './lib/prompt-inspector.js';
+import { STORY_PACES, RELATIONSHIP_PACES } from './lib/host.js';
 
 /** Mobile-first, dependency-free workbench. No model or preset text is interpreted as HTML. */
 const ICONS = {
@@ -152,6 +153,8 @@ export function createWorkbench({ getState, onAction }) {
     let ownsScrollLock = false;
     let destroyed = false;
     const groupOpen = new Map();
+    const reviewGroupOpen = new Map();
+    let importReviewFilter = 'pending';
     const mobile = window.matchMedia('(max-width: 760px)');
     const statusMessage = el('div', 'pw-message');
     statusMessage.setAttribute('role', 'status');
@@ -307,15 +310,26 @@ export function createWorkbench({ getState, onAction }) {
     presetManage.append(field('名称', presetNameInput), presetManageActions, presetDeleteNotice);
     const importReviewDetails = el('details', 'pw-import-review pw-advanced');
     importReviewDetails.append(el('summary', '', '导入检查'));
-    const importFormatStatus = el('p', 'pw-hint pw-format-status');
-    const importReviewMessage = el('p', 'pw-hint');
+    const importReviewMessage = el('p', 'pw-hint pw-format-status');
+    const importReviewToolbar = el('div', 'pw-import-review-toolbar');
+    const importReviewCount = el('p', 'pw-import-review-count'); importReviewCount.setAttribute('role', 'status');
+    const importReviewFilters = el('div', 'pw-import-review-filters'); importReviewFilters.setAttribute('aria-label', '检查条目筛选');
+    const reviewFilterButtons = new Map();
+    for (const [value, label] of [['pending', '待检查'], ['all', '全部']]) {
+        const node = button(label, () => { importReviewFilter = value; renderImportReview(getState()); });
+        node.setAttribute('aria-pressed', String(value === importReviewFilter));
+        reviewFilterButtons.set(value, node); importReviewFilters.append(node);
+    }
+    importReviewToolbar.append(importReviewCount, importReviewFilters);
     const importAdjustmentStatus = el('p', 'pw-hint pw-import-adjustment-status');
     const restoreImportButton = button('恢复自动关闭的条目', () => act('restoreImportDisabled'), { className: 'pw-restore-import' });
+    const importAdjustment = el('div', 'pw-import-adjustment'); importAdjustment.append(importAdjustmentStatus, restoreImportButton);
     const importReviewItems = el('div', 'pw-import-review-items');
-    importReviewDetails.append(el('p', 'pw-hint', '固定输出结构：content → plot / characters / segments / end_state。标签名称与层级需保留，字段内容可修改。'),
-        importFormatStatus,
-        el('p', 'pw-hint', '上下文占位正文由酒馆提供，为只读；可用开关启停。本轮输入和 Anima 记忆会自动加入。'),
-        el('p', 'pw-hint', '本地规则只关闭明确独立的额外输出条目；含变量依赖或混合用途的条目保留待检查。'), importAdjustmentStatus, restoreImportButton, importReviewMessage, importReviewItems);
+    const importReviewHelp = el('details', 'pw-import-review-help');
+    importReviewHelp.append(el('summary', '', '格式与依赖说明'),
+        el('p', 'pw-hint', '固定结构：content → plot / characters / segments / end_state。保留标签与层级，故事内容可修改。'),
+        el('p', 'pw-hint', '变量和角色宏本身不算冲突；定义需先于引用。上下文占位由酒馆提供，本轮输入和 Anima 记忆自动加入。'));
+    importReviewDetails.append(importReviewToolbar, importReviewMessage, importAdjustment, importReviewItems, importReviewHelp);
     const presetUnsaved = el('div', 'pw-editor-notice'); presetUnsaved.hidden = true;
     const presetUnsavedActions = el('div', 'pw-notice-actions');
     presetUnsavedActions.append(button('继续编辑名称', () => { pendingPresetChange = null; presetUnsaved.hidden = true; manageDrawer.hidden = false; presetManage.open = true; presetNameInput.focus(); }), button('放弃名称修改', () => {
@@ -394,7 +408,7 @@ export function createWorkbench({ getState, onAction }) {
     for (const [title, text] of [
         ['保留', '读卡、人物、情感、剧情、视角与用户参与规则。分析输出也可保留，放在 content 外即可，标签名称不限；生成后在“规划分析”查看，不注入正文请求。'],
         ['自动关闭', '名称与内容明确指向额外输出正文、状态栏或逐轮总结的独立条目。导入后列出原因，可一键恢复。'],
-        ['人工检查', '混合多种用途、含变量依赖或无法明确识别的条目保留。文风和八股模块按内容决定：用于正文措辞的部分可关闭，在主预设中保留。'],
+        ['人工检查', '混合多种用途或无法明确识别的输出要求保留待检查。变量和角色宏本身不算冲突。文风和八股模块按内容决定：用于正文措辞的部分可关闭，在主预设中保留。'],
         ['篇幅', '正文目标供规划与扩写共享；内置预设按篇幅与推进节奏组织事件，大纲表达长度可单独配置。'],
         ['变量与格式', '变量定义需先于引用，勿整组关闭定义项。固定 content 四字段协议保持启用；脚本和正则不会执行。'],
     ]) { const item = el('div', 'pw-import-help-item'); item.append(el('strong', '', title), el('p', '', text)); importHelp.append(item); }
@@ -699,11 +713,23 @@ export function createWorkbench({ getState, onAction }) {
     advancedFields.append(streamLabel, el('p', 'pw-hint pw-stream-field', '跟随此 API 方案；完整接收并校验后才注入。输出上限留空时由接口决定。'));
     advanced.append(advancedFields);
     apiSection.append(advanced);
-    const lengthSection = settingsSection('正文篇幅');
+    const lengthSection = settingsSection('正文目标');
     const wordFields = el('div', 'pw-word-fields');
     settingInput(wordFields, 'minWords', '最少字数', 'number', '未设置', undefined, { min: '1', step: '1', inputMode: 'numeric' });
     settingInput(wordFields, 'maxWords', '最多字数', 'number', '未设置', undefined, { min: '1', step: '1', inputMode: 'numeric' });
     lengthSection.append(wordFields, el('p', 'pw-hint', '规划与扩写使用同一份目标'));
+    const storyPace = settingSelect(lengthSection, 'storyPace', '剧情推进', Object.entries(STORY_PACES).map(([value, pace]) => [value, pace.label]));
+    const storyPaceHint = el('p', 'pw-hint pw-story-pace-hint'); storyPaceHint.id = 'pw-story-pace-hint';
+    storyPace.setAttribute('aria-describedby', storyPaceHint.id);
+    function renderStoryPaceHint() { storyPaceHint.textContent = (STORY_PACES[storyPace.value] || STORY_PACES.preset).description; }
+    storyPace.addEventListener('change', renderStoryPaceHint);
+    lengthSection.append(storyPaceHint);
+    const relationshipPace = settingSelect(lengthSection, 'relationshipPace', '感情推进', Object.entries(RELATIONSHIP_PACES).map(([value, pace]) => [value, pace.label]));
+    const relationshipPaceHint = el('p', 'pw-hint pw-relationship-pace-hint'); relationshipPaceHint.id = 'pw-relationship-pace-hint';
+    relationshipPace.setAttribute('aria-describedby', relationshipPaceHint.id);
+    function renderRelationshipPaceHint() { relationshipPaceHint.textContent = (RELATIONSHIP_PACES[relationshipPace.value] || RELATIONSHIP_PACES.preset).description + ' 各档都需经历支撑，不跳过关系阶段。'; }
+    relationshipPace.addEventListener('change', renderRelationshipPaceHint);
+    lengthSection.append(relationshipPaceHint);
     const modeSection = settingsSection('使用方式');
     const modeSelect = el('select', 'pw-input');
     modeSelect.setAttribute('aria-label', '使用方式');
@@ -810,13 +836,17 @@ export function createWorkbench({ getState, onAction }) {
         promptDraft = null; promptBaseline = ''; pendingLeave = null;
         leaveNotice.hidden = true; deleteNotice.hidden = true;
     }
-    function rememberPromptListPosition(id = null) {
+    function rememberPromptListPosition(id = null, source = 'presets') {
         if (selectedPrompt || creatingPrompt) return;
-        promptListReturn = { top: body.scrollTop, id };
+        promptListReturn = { top: body.scrollTop, mainTop: main.scrollTop, id, source };
     }
     function restorePromptListPosition() {
         if (!promptListReturn) return;
         body.scrollTop = promptListReturn.top;
+        main.scrollTop = promptListReturn.mainTop || 0;
+        // Returning from a review must stay in that list, including when the
+        // saved edit removes its row from the pending filter.
+        if (promptListReturn.source === 'review') return;
         const row = [...presetGroups.querySelectorAll('.pw-prompt-row')].find(node => node.dataset.promptId === promptListReturn.id);
         if (row?.getClientRects().length) row.scrollIntoView({ block: 'nearest' });
     }
@@ -1023,7 +1053,7 @@ export function createWorkbench({ getState, onAction }) {
         const state = getState();
         if (groupDraftDirty() || dirtyPrompt || dirtyPlan || presetNameDirty || appearanceDirty || apiDirty()) return true;
         const settings = state.settings || {};
-        if (Object.entries(settingsFields).some(([key, node]) => node.type === 'checkbox' ? node.checked !== Boolean(settings[key]) : node.value !== String(settings[key] ?? ''))) return true;
+        if (Object.entries(settingsFields).some(([key, node]) => node.type === 'checkbox' ? node.checked !== Boolean(settings[key]) : node.value !== String(settings[key] ?? (['storyPace', 'relationshipPace'].includes(key) ? 'preset' : '')))) return true;
         return modeSelect.value !== (settings.mode || 'review') || autoOnSend.checked !== Boolean(settings.autoOnSend)
             || keyField.value !== (state.apiKey || '');
     }
@@ -1102,9 +1132,9 @@ export function createWorkbench({ getState, onAction }) {
             promptNameInput.focus({ preventScroll: true });
         });
     }
-    function openPrompt(id) {
+    function openPrompt(id, source = 'presets') {
         if (isBlocked() || savingPrompt || groupSaving || groupRange || (selectedPrompt === id && !creatingPrompt)) return;
-        rememberPromptListPosition(id);
+        rememberPromptListPosition(id, source);
         withUnsavedGuard(() => {
             clearGroupFlow(); resetEditor(); selectedPrompt = id; activeTab = 'presets';
             render(); body.scrollTop = 0; main.scrollTop = 0;
@@ -1207,6 +1237,9 @@ export function createWorkbench({ getState, onAction }) {
         if (seenPresetId !== state.activePresetId) {
             seenPresetId = state.activePresetId; presetNameDirty = false; presetDeleteNotice.hidden = true; presetUnsaved.hidden = true;
             promptListReturn = null;
+            reviewGroupOpen.clear(); importReviewFilter = 'pending';
+            delete importReviewItems.dataset.signature;
+            importReviewItems.replaceChildren();
             clearGroupFlow();
             if (activeTab === 'presets') body.scrollTop = 0;
         }
@@ -1412,31 +1445,48 @@ export function createWorkbench({ getState, onAction }) {
         hostPresetStatus.hidden = !status; worldbookStatus.hidden = !status;
     }
     function renderImportReview(state) {
-        const preset = state.preset || {};
-        const format = preset.prompts?.find(prompt => prompt.identifier === 'outline_output');
-        const enabled = preset.order?.some(entry => entry.identifier === 'outline_output' && entry.enabled !== false);
-        const mapping = preset.promptGroups?.outline_output;
-        const groupId = typeof mapping === 'string' ? mapping : mapping?.groupId;
-        const groupEnabled = preset.groups?.find(group => group.id === groupId)?.enabled !== false;
-        importFormatStatus.textContent = !format ? '未找到内置格式条目，请检查已有预设是否明确输出此结构。' : !enabled || !groupEnabled ? '格式条目已关闭，可能无法解析。' : '内置格式条目已启用，可编辑内容或关闭；关闭前请确保另有相同输出结构。';
-        importReviewMessage.textContent = state.importReview?.message || '';
+        const review = state.importReview || {};
+        const items = review.items || [];
+        const pendingCount = items.filter(item => item.needsReview).length;
+        importReviewCount.textContent = `${pendingCount} 项待检查`;
+        for (const [value, node] of reviewFilterButtons) node.setAttribute('aria-pressed', String(value === importReviewFilter));
+        importReviewMessage.textContent = review.message || '';
         importReviewMessage.hidden = !importReviewMessage.textContent;
-        const adjusted = state.importReview?.autoDisabledCount || 0;
-        importAdjustmentStatus.hidden = !adjusted;
-        importAdjustmentStatus.textContent = `导入时自动整理 ${adjusted} 项，当前仍关闭 ${state.importReview?.restorableCount || 0} 项。`;
-        restoreImportButton.hidden = !adjusted;
-        restoreImportButton.dataset.disabled = String(!state.importReview?.restorableCount);
-        restoreImportButton.disabled = isBlocked(state) || !state.importReview?.restorableCount;
-        const items = state.importReview?.items || [];
-        const signature = JSON.stringify(items);
+        const adjusted = review.autoDisabledCount || 0;
+        importAdjustment.hidden = !adjusted;
+        importAdjustmentStatus.textContent = `自动关闭 ${adjusted} 项 · 当前仍关闭 ${review.restorableCount || 0} 项`;
+        restoreImportButton.dataset.disabled = String(!review.restorableCount);
+        restoreImportButton.disabled = isBlocked(state) || !review.restorableCount;
+        const groups = review.groups || [];
+        const signature = JSON.stringify([state.activePresetId, importReviewFilter, groups]);
         if (importReviewItems.dataset.signature === signature) return;
+        const scrollTop = body.scrollTop, mainTop = main.scrollTop;
+        for (const group of importReviewItems.querySelectorAll('.pw-review-group')) reviewGroupOpen.set(group.dataset.groupId, group.open);
         importReviewItems.dataset.signature = signature;
-        importReviewItems.replaceChildren(...items.map(item => {
-            const row = el('div', 'pw-import-review-item');
-            row.append(button(item.name || item.id, () => openPrompt(item.id), { iconName: 'edit', className: 'pw-review-edit' }));
-            if (item.reason) row.append(el('p', 'pw-hint', item.reason));
-            return row;
-        }));
+        const visibleGroups = groups.map(group => ({ ...group, visibleItems: group.items.filter(item => importReviewFilter === 'all' || item.needsReview) })).filter(group => group.visibleItems.length);
+        const labels = { review: '待检查', disabled: '已关闭', format: '格式', info: '依赖', normal: '可用' };
+        const nodes = visibleGroups.map((group, index) => {
+            const details = el('details', 'pw-review-group'); details.dataset.groupId = group.id;
+            details.open = reviewGroupOpen.has(group.id) ? reviewGroupOpen.get(group.id) : index === 0;
+            details.addEventListener('toggle', () => { if (details.isConnected) reviewGroupOpen.set(group.id, details.open); });
+            const summary = el('summary', 'pw-review-group-summary');
+            const name = el('span', 'pw-review-group-name'); name.append(icon('chevron'), el('span', '', group.name));
+            const pending = group.items.filter(item => item.needsReview).length;
+            const count = el('span', 'pw-review-group-count', importReviewFilter === 'pending' ? `${pending} 项` : `${pending ? `${pending} 待检查 · ` : ''}${group.items.length} 项`);
+            summary.append(name, count); details.append(summary);
+            for (const item of group.visibleItems) {
+                const row = el('div', 'pw-import-review-item'); row.dataset.promptId = item.id; row.dataset.status = item.status;
+                const heading = el('div', 'pw-review-item-heading');
+                const edit = button(item.name || item.id, () => openPrompt(item.id, 'review'), { iconName: 'edit', className: 'pw-review-edit' });
+                const status = el('span', 'pw-review-item-status', item.kind === 'context' ? '上下文' : labels[item.status] || '可用');
+                heading.append(edit, status); row.append(heading);
+                if (item.reason) row.append(el('p', 'pw-hint', item.reason));
+                details.append(row);
+            }
+            return details;
+        });
+        importReviewItems.replaceChildren(...(nodes.length ? nodes : [el('p', 'pw-review-empty', importReviewFilter === 'pending' ? '当前没有待检查条目。可切换“全部”查看预设。' : '当前没有检查条目。')]));
+        body.scrollTop = scrollTop; main.scrollTop = mainTop;
     }
     function renderUpdate(state) {
         const update = state.update || {};
@@ -1653,6 +1703,10 @@ export function createWorkbench({ getState, onAction }) {
             if (node.type === 'checkbox') node.checked = Boolean(settings[key]);
             else setInputValue(node, settings[key]);
         }
+        if (!configDrafts.has('storyPace')) storyPace.value = Object.hasOwn(STORY_PACES, settings.storyPace) ? settings.storyPace : 'preset';
+        renderStoryPaceHint();
+        if (!configDrafts.has('relationshipPace')) relationshipPace.value = Object.hasOwn(RELATIONSHIP_PACES, settings.relationshipPace) ? settings.relationshipPace : 'preset';
+        renderRelationshipPaceHint();
         if (!configDrafts.has('mode')) modeSelect.value = settings.mode || 'review';
         if (!configDrafts.has('autoOnSend')) autoOnSend.checked = Boolean(settings.autoOnSend);
         modeHint.textContent = settings.mode === 'auto' ? '大纲通过格式检查后直接交给主模型。' : settings.mode === 'manual' ? '只生成大纲，不自动注入主请求。' : '大纲生成后暂停，确认后再交给主模型。';
