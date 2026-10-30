@@ -150,7 +150,7 @@ test('normalizes compatible endpoints without allowing credentials/query secrets
     for (const value of ['https://u:pw@example.com', 'https://example.com?key=secret', 'file:///tmp/key', 'not a url']) assert.throws(() => normalizeEndpoint(value), { code: 'ENDPOINT_INVALID' });
 });
 
-test('planner sends separate explicit key and extracts only content, never separate reasoning', async () => {
+test('planner sends separate explicit key and isolates returned reasoning from the outline', async () => {
     let captured;
     const result = await requestPlan({ baseUrl: 'https://example.com/v1', apiKey: 'private-key', model: 'planner', messages: [{ role: 'user', content: 'input' }], temperature: 0, maxTokens: 4000, transport: async request => {
         captured = request;
@@ -160,7 +160,10 @@ test('planner sends separate explicit key and extracts only content, never separ
     assert.equal(captured.body.temperature, 0);
     assert.equal(captured.body.max_tokens, 4000);
     assert.equal(result.usage.total_tokens, 12);
-    assert.ok(!JSON.stringify(result).includes('private analysis'));
+    assert.equal(result.analysis.reasoning, 'private analysis');
+    for (const field of ['xml', 'plot', 'characters', 'segments', 'endState']) {
+        assert.ok(!JSON.stringify(result[field] ?? '').includes('private analysis'));
+    }
 });
 
 test('planner rejects truncated API responses and does not expose echoed HTTP errors', async () => {

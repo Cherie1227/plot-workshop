@@ -14,7 +14,7 @@ async function until(predicate, label) {
 }
 
 async function fixture(t, { settings = {}, saved, fetchMode = 'success', api, detectAnima, observerGate, recallAnima, host = {}, updaterFactory,
-    viewState = { open: false, unsaved: false }, reloadPage, rewriteMode = 'success' } = {}) {
+    viewState = { open: false, unsaved: false }, reloadPage, rewriteMode = 'success', plannerMessage } = {}) {
     const prior = { document: globalThis.document, sessionStorage: globalThis.sessionStorage, localStorage: globalThis.localStorage, SillyTavern: globalThis.SillyTavern };
     const input = { value: '她递出信。', dispatchEvent() {} };
     const storage = new Map();
@@ -66,7 +66,7 @@ async function fixture(t, { settings = {}, saved, fetchMode = 'success', api, de
         calls.planner.push({ url, options, body: JSON.parse(options.body) });
         if (fetchMode === 'error') return new Response('server private-key details', { status: 503 });
         if (fetchMode === 'pending') return new Promise((_, reject) => options.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true }));
-        return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: xml } }] }));
+        return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: plannerMessage ?? { content: xml } }] }));
     };
     const view = { render() {}, open() { viewState.open = true; }, close() { viewState.open = false; }, destroy() {},
         isOpen: () => viewState.open, hasUnsavedChanges: () => viewState.unsaved };
@@ -190,6 +190,109 @@ function compiledPromptOrder(preset) {
     return compilePreset(preset, { context: { currentInput: '本轮输入', animaStatus: 'empty', animaMemory: '', charDescription: '角色资料' } })
         .messages.filter(message => message.content.startsWith('ORDER_')).map(message => message.content);
 }
+
+test('range grouping uses actual request order across groups without changing prompt content or compiled order', async t => {
+    const f = await fixture(t, { saved: { preset: reorderPresetFixture() } });
+    const preset = f.plugin.state.preset, order = structuredClone(preset.order), prompts = structuredClone(preset.prompts);
+    const compiled = compiledPromptOrder(preset);
+    const result = await f.plugin.onAction('createPromptGroup', { presetId: f.plugin.state.activePresetId, startId: 'a', endId: 'c', name: ' 人物与回应 ' });
+    assert.equal(result.count, 4, 'The interleaved x belongs in the actual a..c range');
+    assert.equal(preset.groups.find(group => group.id === result.id).name, '人物与回应');
+    for (const id of ['a', 'x', 'b', 'c']) assert.equal(preset.promptGroups[id], result.id);
+    assert.equal(preset.promptGroups.y, 'group-b');
+    assert.deepEqual(preset.order, order); assert.deepEqual(preset.prompts, prompts);
+    assert.deepEqual(compiledPromptOrder(preset), compiled);
+    await f.plugin.onAction('groupToggle', { id: result.id, enabled: false });
+    assert.deepEqual(compiledPromptOrder(preset), ['ORDER_y']);
+    await f.plugin.onAction('groupToggle', { id: result.id, enabled: true });
+    assert.deepEqual(compiledPromptOrder(preset), compiled);
+    assert.equal(f.calls.planner.length, 0); assert.equal(f.calls.recalled, 0);
+});
+
+test('reverse, single-entry and unlisted grouping preserve effective disabled state', async t => {
+    const source = reorderPresetFixture(); source.groups[1].enabled = false;
+    const f = await fixture(t, { saved: { preset: source } });
+    const preset = f.plugin.state.preset, compiled = compiledPromptOrder(preset), orderIds = preset.order.map(entry => entry.identifier);
+    const result = await f.plugin.onAction('createPromptGroup', { presetId: f.plugin.state.activePresetId, startId: 'c', endId: 'a', name: '反向范围' });
+    assert.equal(result.count, 4);
+    assert.equal(preset.order.find(entry => entry.identifier === 'x').enabled, false);
+    assert.equal(preset.order.find(entry => entry.identifier === 'b').enabled, false);
+    assert.equal(preset.order.find(entry => entry.identifier === 'a').enabled, true);
+    assert.deepEqual(compiledPromptOrder(preset), compiled);
+    const tail = await f.plugin.onAction('createPromptGroup', { presetId: f.plugin.state.activePresetId, startId: 'charDescription', endId: 'unlisted', name: '资料' });
+    assert.equal(tail.count, 2); assert.equal(preset.promptGroups.unlisted, tail.id);
+    assert.equal(preset.order.find(entry => entry.identifier === 'charDescription').enabled, false);
+    assert.deepEqual(preset.order.map(entry => entry.identifier), orderIds);
+    const single = await f.plugin.onAction('createPromptGroup', { presetId: f.plugin.state.activePresetId, startId: 'unlisted', endId: 'unlisted', name: '单条' });
+    assert.equal(single.count, 1); assert.equal(preset.promptGroups.unlisted, single.id);
+    assert.ok(!preset.order.some(entry => entry.identifier === 'unlisted'));
+    assert.deepEqual(compiledPromptOrder(preset), compiled);
+});
+
+test('group rename and range membership survive autosave, reload and export import', async t => {
+    const f = await fixture(t, { saved: { preset: reorderPresetFixture() } });
+    const { id } = await f.plugin.onAction('createPromptGroup', { presetId: f.plugin.state.activePresetId, startId: 'x', endId: 'y', name: '新组' });
+    await f.plugin.onAction('renamePromptGroup', { id, name: '剧情回应' });
+    const before = structuredClone(f.plugin.state.preset), compiled = compiledPromptOrder(before);
+    await f.plugin.onAction('exportPreset');
+    const exported = await f.downloads[0].blob.text();
+    await f.reload();
+    assert.deepEqual(f.plugin.state.preset.groups, before.groups);
+    assert.deepEqual({ ...f.plugin.state.preset.promptGroups }, before.promptGroups);
+    assert.deepEqual(f.plugin.state.preset.order, before.order);
+    await f.plugin.onAction('importPreset', { text: exported });
+    assert.deepEqual(f.plugin.state.preset.groups, before.groups);
+    assert.deepEqual({ ...f.plugin.state.preset.promptGroups }, before.promptGroups);
+    assert.deepEqual(compiledPromptOrder(f.plugin.state.preset), compiled);
+});
+
+test('dissolving a disabled group keeps entries and their effective off state, including a later delete undo', async t => {
+    const source = reorderPresetFixture(); source.groups[1].enabled = false;
+    const f = await fixture(t, { saved: { preset: source } });
+    const preset = f.plugin.state.preset;
+    const compiled = compiledPromptOrder(preset);
+    await f.plugin.onAction('deletePrompt', { id: 'y' });
+    const names = preset.prompts.map(prompt => prompt.identifier), orderIds = preset.order.map(entry => entry.identifier);
+    const result = await f.plugin.onAction('dissolvePromptGroup', { id: 'group-b' });
+    assert.equal(result.count, 2);
+    assert.ok(!preset.groups.some(group => group.id === 'group-b'));
+    assert.equal(preset.promptGroups.x, undefined);
+    assert.deepEqual(preset.prompts.map(prompt => prompt.identifier), names);
+    assert.deepEqual(preset.order.map(entry => entry.identifier), orderIds);
+    assert.deepEqual(compiledPromptOrder(preset), compiled);
+    await f.plugin.onAction('undoDeletePrompt');
+    assert.equal(preset.promptGroups.y, undefined);
+    assert.deepEqual(compiledPromptOrder(preset), compiled, 'Undo must not activate a member of the dissolved disabled group');
+});
+
+test('invalid or stale range/group requests do not mutate saved presets', async t => {
+    const f = await fixture(t, { saved: { preset: reorderPresetFixture() } });
+    const request = { presetId: f.plugin.state.activePresetId, startId: 'a', endId: 'c', name: '有效名称' };
+    for (const [action, payload] of [
+        ['createPromptGroup', { ...request, name: '  ' }], ['createPromptGroup', { ...request, startId: 'missing' }],
+        ['createPromptGroup', { ...request, presetId: 'other-preset' }], ['createPromptGroup', { ...request, endId: null }],
+        ['renamePromptGroup', { id: 'group-a', name: '' }], ['renamePromptGroup', { id: 'missing', name: '名字' }],
+        ['dissolvePromptGroup', { id: 'missing' }], ['dissolvePromptGroup', { id: '' }],
+    ]) {
+        const before = JSON.stringify(f.plugin.state.preset), saved = JSON.stringify(f.ctx.extensionSettings), saves = f.calls.saves;
+        assert.equal(await f.plugin.onAction(action, payload), false);
+        assert.equal(JSON.stringify(f.plugin.state.preset), before); assert.equal(JSON.stringify(f.ctx.extensionSettings), saved);
+        assert.equal(f.calls.saves, saves);
+    }
+});
+
+test('group mutations cannot run while the planner is in flight', async t => {
+    const f = await fixture(t, { saved: { preset: reorderPresetFixture(), settings: { baseUrl: 'https://relay.example/v1', model: 'planner-A', mode: 'review' } }, fetchMode: 'pending' });
+    const planning = f.plugin.onAction('generate', { input: f.input.value });
+    await until(() => f.calls.planner.length === 1, 'planner request');
+    const before = JSON.stringify(f.plugin.state.preset);
+    for (const [type, payload] of [
+        ['createPromptGroup', { presetId: f.plugin.state.activePresetId, startId: 'a', endId: 'c', name: '新组' }],
+        ['renamePromptGroup', { id: 'group-a', name: '改名' }], ['dissolvePromptGroup', { id: 'group-a' }],
+    ]) assert.equal(await f.plugin.onAction(type, payload), false);
+    assert.equal(JSON.stringify(f.plugin.state.preset), before);
+    await f.plugin.onAction('cancel'); await planning;
+});
 
 test('manual planning then confirmation writes only final prose and clears this-turn injection', async t => {
     const { ctx, plugin, calls, input } = await fixture(t);
@@ -948,6 +1051,61 @@ test('editing or restoring a plan invalidates recommendations from an earlier di
     assert.equal(f.calls.writer.length, 0);
 });
 
+test('returned planning analysis stays outside writer requests, caches, backups, logs and later planning', async t => {
+    const secret = 'UNIQUE_RETURNED_ANALYSIS_92817';
+    const f = await fixture(t, { settings: { mode: 'auto' }, plannerMessage: {
+        content: `<ecot>${secret}-supplement</ecot>\n${xml}`, reasoning_content: `${secret}-reasoning`,
+    } });
+    await f.plugin.onAction('generate', { input: f.input.value });
+    assert.equal(f.calls.writer.length, 1, 'Analysis must not add a review stop in auto mode');
+    assert.equal(f.plugin.state.planningAnalysis.reasoning, `${secret}-reasoning`);
+    assert.equal(f.plugin.state.planningAnalysis.supplement, `<ecot>${secret}-supplement</ecot>`);
+    assert.equal(Object.hasOwn(f.plugin.state.plan, 'analysis'), false);
+    assert.equal(Object.hasOwn(f.plugin.state.plan, 'raw'), false);
+    await f.plugin.onAction('exportBackup');
+    assert.ok(!(await f.downloads.at(-1).blob.text()).includes(secret));
+    f.input.value = '她等待他回答。';
+    await f.plugin.onAction('generate', { input: f.input.value });
+    assert.equal(f.calls.planner.length, 2);
+    assert.equal(f.calls.writer.length, 2);
+    const surfaces = [f.plugin.state.plan, f.plugin.state.rawPlan, f.plugin.state.planVersions,
+        f.plugin.state.logs, f.ctx.extensionSettings, f.ctx.chat, f.ctx.extensionPrompts,
+        f.calls.planner, f.calls.writer, [...f.storage], [...f.localStorage]];
+    for (const surface of surfaces) assert.ok(!JSON.stringify(surface).includes(secret));
+});
+
+test('planning analysis belongs to the current response and is cleared on restore, reload and chat change', async t => {
+    const f = await fixture(t, { plannerMessage: { content: `<thinking>RESPONSE_ONLY</thinking>${xml}` } });
+    await f.plugin.onAction('generate', { input: f.input.value });
+    const first = f.plugin.state.planVersions[0];
+    await f.plugin.onAction('applyPlanEdit', { xml: first.xml });
+    assert.equal(f.plugin.state.planningAnalysis.edited, false);
+    await f.plugin.onAction('applyPlanEdit', { xml: first.xml.replace('接信。', '暂不拆信。') });
+    assert.equal(f.plugin.state.planningAnalysis.edited, true);
+    await f.plugin.onAction('restoreVersion', { id: first.id });
+    assert.equal(f.plugin.state.planningAnalysis, null);
+    await f.plugin.onAction('generate', { input: f.input.value });
+    assert.ok(f.plugin.state.planningAnalysis.supplement.includes('RESPONSE_ONLY'));
+    await f.reload();
+    assert.equal(f.plugin.state.planningAnalysis, null);
+    assert.ok(f.plugin.state.plan);
+    await f.plugin.onAction('generate', { input: f.input.value });
+    f.ctx.chatId = 'chat-b'; await f.events.emit('CHAT_CHANGED');
+    assert.equal(f.plugin.state.planningAnalysis, null);
+});
+
+test('manual fill uses only the outline and empty analysis remains explicitly empty', async t => {
+    const message = { content: `<unknown-analysis>VIEW_ONLY</unknown-analysis>${xml}` };
+    const f = await fixture(t, { settings: { mode: 'manual' }, plannerMessage: message });
+    await f.plugin.onAction('generate', { input: f.input.value });
+    await f.plugin.onAction('fillInput');
+    assert.ok(f.input.value.includes('<content>'));
+    assert.ok(!f.input.value.includes('VIEW_ONLY'));
+    f.input.value = '她递出信。'; message.content = xml;
+    await f.plugin.onAction('generate', { input: f.input.value });
+    assert.deepEqual(f.plugin.state.planningAnalysis, { reasoning: '', supplement: '', truncated: false, edited: false });
+});
+
 test('backup exports no credentials or raw memory; valid imports merge copies and imported drafts cannot write', async t => {
     const f = await fixture(t);
     await f.plugin.onAction('apiProfileSave', { name: '本地方案', apiKey: 'backup-private-key', rememberKey: true });
@@ -1324,4 +1482,51 @@ test('update refresh rechecks generation and unsaved edits after awaiting host s
             assert.equal(f.calls.reloads, 0, 'A newly busy host or unsaved form must prevent late refresh');
         });
     }
+});
+
+test('import adjustment changes only the new copy, persists its report and restores only automatic choices', async t => {
+    const f = await fixture(t);
+    const originalId = f.plugin.state.activePresetId;
+    const originalPreset = JSON.stringify(f.plugin.state.preset);
+    const hostConfig = JSON.stringify(f.ctx.chatCompletionSettings);
+    const imported = { name: '普通正文预设', prompts: [
+        { identifier: 'character_work', name: '人物理解', role: 'system', content: '结合人物经历确定当前动机和回应。' },
+        { identifier: 'prose', name: '正文输出', role: 'system', content: '请直接输出完整的小说正文。' },
+        { identifier: 'status', name: '状态栏', role: 'system', content: '在每次回复末尾输出状态栏，包含姓名、心情和位置。' },
+        { identifier: 'vars', name: '文风变量', role: 'system', content: '{{setvar::style::细腻}}' },
+        { identifier: 'already_off', name: '已关闭条目', role: 'system', content: '不应恢复', enabled: false },
+    ] };
+    const result = await f.plugin.onAction('importPreset', { text: JSON.stringify(imported) });
+    assert.equal(result.autoDisabledCount, 2);
+    assert.notEqual(f.plugin.state.activePresetId, originalId);
+    const enabled = id => f.plugin.state.preset.order.find(item => item.identifier === id)?.enabled;
+    assert.equal(enabled('prose'), false); assert.equal(enabled('status'), false);
+    assert.equal(enabled('character_work'), true); assert.equal(enabled('vars'), true); assert.equal(enabled('outline_output'), true);
+    assert.equal(f.calls.planner.length, 0); assert.equal(f.calls.recalled, 0);
+    assert.equal(JSON.stringify(f.ctx.chatCompletionSettings), hostConfig);
+    assert.equal(f.plugin.state.importReview.autoDisabledCount, 2);
+    await f.reload();
+    await f.plugin.onAction('presetSave');
+    assert.equal(f.plugin.state.importReview.restorableCount, 2);
+    assert.equal((await f.plugin.onAction('restoreImportDisabled')).count, 2);
+    assert.equal(enabled('prose'), true); assert.equal(enabled('status'), true);
+    assert.equal(enabled('already_off'), false);
+    assert.equal(f.plugin.state.importReview.restorableCount, 0);
+    await f.plugin.onAction('presetSelect', { id: originalId });
+    assert.equal(JSON.stringify(f.plugin.state.preset), originalPreset);
+});
+
+test('reimporting a Vespera export retains restored selections and scoped import history', async t => {
+    const f = await fixture(t);
+    await f.plugin.onAction('importPreset', { text: JSON.stringify({ name: '独立正文', prompts: [{ identifier: 'prose', name: '正文输出', content: '请直接输出完整的小说正文。' }] }) });
+    await f.plugin.onAction('restoreImportDisabled');
+    const saved = structuredClone(f.ctx.extensionSettings.plot_workshop.preset);
+    assert.equal(saved.extensions.plot_workshop.import_advice.disable.length, 1);
+    const result = await f.plugin.onAction('importPreset', { text: JSON.stringify(saved) });
+    assert.equal(result.autoDisabledCount, 0);
+    assert.equal(f.plugin.state.preset.order.find(item => item.identifier === 'prose').enabled, true);
+    assert.equal(f.plugin.state.importReview.restorableCount, 0);
+    await f.plugin.onAction('presetNew');
+    assert.equal(f.plugin.state.importReview.autoDisabledCount, 0);
+    assert.equal((await f.plugin.onAction('restoreImportDisabled')).count, 0);
 });

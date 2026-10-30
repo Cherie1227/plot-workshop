@@ -90,6 +90,13 @@ export function createWorkbench({ getState, onAction }) {
     dialog.tabIndex = -1;
     const shell = el('div', 'pw-shell');
     dialog.append(shell);
+    // Resolve legacy rgba/hex/hsl host colors through the browser, then keep RGB
+    // only. The outer surface must never borrow alpha from the chat theme.
+    const hostColorProbe = el('span');
+    hostColorProbe.hidden = true;
+    hostColorProbe.setAttribute('aria-hidden', 'true');
+    hostColorProbe.style.setProperty('color', 'var(--SmartThemeBlurTintColor, #11171e)', 'important');
+    dialog.append(hostColorProbe);
     let activeTab = 'outline';
     let planView = 'read';
     let selectedPrompt = null;
@@ -113,11 +120,16 @@ export function createWorkbench({ getState, onAction }) {
     let appearanceFeedback = '';
     let worldbookPage = 1;
     let promptListReturn = null;
+    let groupRange = null;
+    let groupManage = null;
+    let groupSaving = false;
+    let pendingGroupLeave = null;
     const configDrafts = new Map();
     let keyDraftDirty = false;
     let seenRawPlan;
     let presetSignature = '';
     let planSignature = '';
+    let analysisSignature = '';
     let beforeFocus;
     let oldBodyOverflow;
     let ownsScrollLock = false;
@@ -208,7 +220,7 @@ export function createWorkbench({ getState, onAction }) {
     const hostPresetImport = button('导入为副本', () => guardPresetChange(async () => {
         if (!hostPresetSelect.value || isBlocked()) return;
         const result = await act('importHostPreset', { id: hostPresetSelect.value });
-        if (result !== false) { resetEditor(); presetNameDirty = false; render(); }
+        if (result !== false) { resetEditor(); presetNameDirty = false; showImportReview(); render(); }
     }));
     hostPresetSelect.addEventListener('change', () => { hostPresetImport.disabled = isBlocked() || !hostPresetSelect.value; });
     const hostPresetActions = el('div', 'pw-management-actions');
@@ -224,7 +236,7 @@ export function createWorkbench({ getState, onAction }) {
         if (file.size > 5_000_000) { statusMessage.textContent = '预设超过 5 MB，请缩小文件后再导入。'; importInput.value = ''; return; }
         const result = await act('importPreset', { text: await file.text(), name: file.name.replace(/\.json$/i, '') });
         importInput.value = '';
-        if (result !== false) resetEditor();
+        if (result !== false) { resetEditor(); showImportReview(); }
         render();
     });
     const presetActions = el('div', 'pw-preset-actions');
@@ -235,7 +247,14 @@ export function createWorkbench({ getState, onAction }) {
     presetNameInput.addEventListener('input', () => { presetNameDirty = presetNameInput.value !== (getState().preset?.name || ''); renderPresetSaveStatus(); });
     const presetManageActions = el('div', 'pw-management-actions');
     const savePresetName = async type => {
-        if (isBlocked() || savingPrompt) return;
+        if (isBlocked() || savingPrompt || groupSaving) return;
+        if (groupDraftDirty()) {
+            activeTab = 'presets'; renderTabs();
+            statusMessage.textContent = '分组修改尚未保存，请先保存或取消分组修改。';
+            renderPresetSaveStatus();
+            (groupRange ? groupRangePanel : presetGroups.querySelector('.pw-group-manage:not([hidden])'))?.scrollIntoView({ block: 'nearest' });
+            return;
+        }
         if (dirtyPrompt) {
             activeTab = 'presets'; renderTabs();
             statusMessage.textContent = '此条目有未保存的修改，请先保存条目，再保存预设。';
@@ -270,11 +289,13 @@ export function createWorkbench({ getState, onAction }) {
     importReviewDetails.append(el('summary', '', '导入检查'));
     const importFormatStatus = el('p', 'pw-hint pw-format-status');
     const importReviewMessage = el('p', 'pw-hint');
+    const importAdjustmentStatus = el('p', 'pw-hint pw-import-adjustment-status');
+    const restoreImportButton = button('恢复自动关闭的条目', () => act('restoreImportDisabled'), { className: 'pw-restore-import' });
     const importReviewItems = el('div', 'pw-import-review-items');
     importReviewDetails.append(el('p', 'pw-hint', '固定输出结构：content → plot / characters / segments / end_state。标签名称与层级需保留，字段内容可修改。'),
         importFormatStatus,
         el('p', 'pw-hint', '上下文占位正文由酒馆提供，为只读；可用开关启停。本轮输入和 Anima 记忆会自动加入。'),
-        el('p', 'pw-hint', '保留人设与剧情规则；检查正文篇幅、视角和文风。正文输出模板、状态栏与其他标签是优先检查候选，按实际内容决定是否关闭。'), importReviewMessage, importReviewItems);
+        el('p', 'pw-hint', '本地规则只关闭明确独立的额外输出条目；含变量依赖或混合用途的条目保留待检查。'), importAdjustmentStatus, restoreImportButton, importReviewMessage, importReviewItems);
     const presetUnsaved = el('div', 'pw-editor-notice'); presetUnsaved.hidden = true;
     const presetUnsavedActions = el('div', 'pw-notice-actions');
     presetUnsavedActions.append(button('继续编辑名称', () => { pendingPresetChange = null; presetUnsaved.hidden = true; manageDrawer.hidden = false; presetManage.open = true; presetNameInput.focus(); }), button('放弃名称修改', () => {
@@ -290,6 +311,28 @@ export function createWorkbench({ getState, onAction }) {
     undoNotice.append(undoText, undoButton); undoNotice.hidden = true;
     const presetGroups = el('div', 'pw-groups');
     const presetWarnings = el('p', 'pw-hint pw-preset-warnings');
+    const groupLeaveNotice = el('div', 'pw-editor-notice pw-group-leave'); groupLeaveNotice.hidden = true;
+    const groupLeaveActions = el('div', 'pw-notice-actions');
+    groupLeaveActions.append(button('继续分组', () => { pendingGroupLeave = null; groupLeaveNotice.hidden = true; }), button('放弃分组修改', () => {
+        const next = pendingGroupLeave; clearGroupFlow(); render(); next?.();
+    }, { className: 'pw-danger' }));
+    groupLeaveNotice.append(el('p', '', '分组修改尚未保存。继续编辑，或放弃后离开。'), groupLeaveActions);
+    const groupRangePanel = el('section', 'pw-group-range'); groupRangePanel.hidden = true;
+    groupRangePanel.setAttribute('aria-label', '创建分组');
+    const groupRangeHeading = el('div', 'pw-group-range-heading');
+    groupRangeHeading.append(el('h3', '', '创建分组'), button('取消分组', cancelGroupRange));
+    const groupRangeHint = el('p', 'pw-hint', '按实际预设顺序选择末尾条目，包含两端；可向前选，也可只选起点。');
+    const groupRangeStatus = el('p', 'pw-group-range-status'); groupRangeStatus.setAttribute('role', 'status');
+    const groupRangeList = el('div', 'pw-group-range-list'); groupRangeList.setAttribute('aria-label', '按实际顺序选择分组终点');
+    const groupRangeForm = el('div', 'pw-group-range-form');
+    const groupRangeName = control('text', '给新分组起名'); groupRangeName.maxLength = 200; groupRangeName.setAttribute('aria-label', '新分组名称');
+    groupRangeName.addEventListener('input', () => {
+        if (groupRange) groupRange.name = groupRangeName.value;
+        if (groupRangeName.value.trim() && statusMessage.textContent === '请填写分组名称。') statusMessage.textContent = '';
+    });
+    const groupRangeSave = button('创建分组', saveGroupRange, { className: 'pw-primary' });
+    groupRangeForm.append(field('分组名称', groupRangeName), groupRangeSave);
+    groupRangePanel.append(groupRangeHeading, groupRangeHint, groupRangeStatus, groupRangeList, groupRangeForm);
     const worldbooksPage = el('section', 'pw-worldbooks-page pw-page');
     const worldbooksHead = el('div', 'pw-page-heading pw-worldbooks-heading');
     worldbooksHead.append(icon('leaf'), el('h2', '', '世界书'), button('刷新目录', () => act('refreshHostCatalog')));
@@ -317,10 +360,33 @@ export function createWorkbench({ getState, onAction }) {
     worldbooksPage.append(worldbooksHead, worldbookStatus, mountedSection, extraSection);
     const presetToolbar = el('div', 'pw-preset-toolbar');
     const presetDrawers = el('div', 'pw-preset-drawers');
-    const importDrawer = el('section', 'pw-preset-drawer'); importDrawer.append(presetActions, hostPresetDetails);
+    const importDrawer = el('section', 'pw-preset-drawer');
+    const importHelp = el('section', 'pw-import-help'); importHelp.id = 'pw-import-help'; importHelp.hidden = true;
+    const importHelpButton = button('?', () => {
+        importHelp.hidden = !importHelp.hidden;
+        importHelpButton.setAttribute('aria-expanded', String(!importHelp.hidden));
+    }, { className: 'pw-import-help-button', title: '导入预设帮助' });
+    importHelpButton.setAttribute('aria-label', '导入预设帮助');
+    importHelpButton.setAttribute('aria-expanded', 'false'); importHelpButton.setAttribute('aria-controls', importHelp.id);
+    importHelp.addEventListener('keydown', event => { if (event.key === 'Escape') { event.stopPropagation(); importHelp.hidden = true; importHelpButton.setAttribute('aria-expanded', 'false'); importHelpButton.focus(); } });
+    const importHeading = el('div', 'pw-import-heading'); importHeading.append(el('h3', '', '导入预设'), importHelpButton);
+    importHelp.append(el('p', 'pw-hint', '只整理导入的规划副本，酒馆主预设保持原样。'));
+    for (const [title, text] of [
+        ['保留', '读卡、人物、情感、剧情、视角与用户参与规则。分析输出也可保留，放在 content 外即可，标签名称不限；生成后在“规划分析”查看，不注入正文请求。'],
+        ['自动关闭', '名称与内容明确指向额外输出正文、状态栏或逐轮总结的独立条目。导入后列出原因，可一键恢复。'],
+        ['人工检查', '混合多种用途、含变量依赖或无法明确识别的条目保留。文风和八股模块按内容决定：用于正文措辞的部分可关闭，在主预设中保留。'],
+        ['篇幅', '正文目标供规划与扩写共享；大纲段数和字数单独设置。'],
+        ['变量与格式', '变量定义需先于引用，勿整组关闭定义项。固定 content 四字段协议保持启用；脚本和正则不会执行。'],
+    ]) { const item = el('div', 'pw-import-help-item'); item.append(el('strong', '', title), el('p', '', text)); importHelp.append(item); }
+    importHelp.append(el('p', 'pw-hint', '识别使用本地规则，不调用模型。Vespera 自己导出的预设保留原开关，不重复整理。'));
+    importDrawer.append(importHeading, importHelp, presetActions, hostPresetDetails);
     const manageDrawer = el('section', 'pw-preset-drawer'); manageDrawer.append(presetManage);
     const checkDrawer = el('section', 'pw-preset-drawer'); checkDrawer.append(importReviewDetails);
     const drawers = [manageDrawer, importDrawer, checkDrawer];
+    function showImportReview() {
+        for (const drawer of drawers) drawer.hidden = drawer !== checkDrawer;
+        importReviewDetails.open = true;
+    }
     function togglePresetDrawer(drawer) {
         const opening = drawer.hidden;
         for (const node of drawers) node.hidden = true;
@@ -329,7 +395,7 @@ export function createWorkbench({ getState, onAction }) {
     }
     for (const drawer of drawers) { drawer.hidden = true; presetDrawers.append(drawer); }
     presetToolbar.append(button('管理', () => togglePresetDrawer(manageDrawer), { iconName: 'settings' }), button('导入', () => togglePresetDrawer(importDrawer), { iconName: 'upload' }), button('检查', () => togglePresetDrawer(checkDrawer), { iconName: 'file' }), newPromptButton);
-    presets.append(presetHead, presetSelectRow, presetSaveStatus, presetToolbar, presetDrawers, importInput, presetUnsaved, undoNotice, presetGroups, presetWarnings);
+    presets.append(presetHead, presetSelectRow, presetSaveStatus, presetToolbar, presetDrawers, importInput, presetUnsaved, undoNotice, groupLeaveNotice, groupRangePanel, presetGroups, presetWarnings);
     const inspectionDetails = el('details', 'pw-inspection pw-advanced');
     inspectionDetails.append(el('summary', '', '本轮读取与用量'));
     const inspectButton = button('读取本轮资料', () => act('inspectPrompts', { input: input.value }), { className: 'pw-inspect-button' });
@@ -369,17 +435,22 @@ export function createWorkbench({ getState, onAction }) {
     planTabs.setAttribute('aria-label', '大纲显示方式');
     const readButton = button('阅读', () => { planView = 'read'; render(); }, { className: 'pw-tab' });
     const editButton = button('编辑', () => { planView = 'edit'; render(); }, { className: 'pw-tab' });
-    readButton.setAttribute('role', 'tab'); editButton.setAttribute('role', 'tab');
-    readButton.id = 'pw-read-tab'; editButton.id = 'pw-edit-tab';
-    readButton.setAttribute('aria-controls', 'pw-read-panel'); editButton.setAttribute('aria-controls', 'pw-edit-panel');
+    const analysisButton = button('规划分析', () => { planView = 'analysis'; render(); }, { className: 'pw-tab' });
+    const planTabEntries = [['read', readButton], ['edit', editButton], ['analysis', analysisButton]];
+    for (const [key, node] of planTabEntries) {
+        node.setAttribute('role', 'tab'); node.id = `pw-${key}-tab`;
+        node.setAttribute('aria-controls', `pw-${key}-panel`);
+    }
     planTabs.addEventListener('keydown', event => {
         if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
         event.preventDefault();
-        planView = event.key === 'Home' ? 'read' : event.key === 'End' ? 'edit' : planView === 'read' ? 'edit' : 'read';
+        const current = planTabEntries.findIndex(([key]) => key === planView);
+        const next = event.key === 'Home' ? 0 : event.key === 'End' ? planTabEntries.length - 1 : (current + (event.key === 'ArrowRight' ? 1 : -1) + planTabEntries.length) % planTabEntries.length;
+        planView = planTabEntries[next][0];
         render();
-        (planView === 'read' ? readButton : editButton).focus();
+        planTabEntries[next][1].focus();
     });
-    planTabs.append(readButton, editButton);
+    planTabs.append(readButton, editButton, analysisButton);
     planHeader.append(el('h3', '', '大纲内容'), planTabs);
     const planReading = el('div', 'pw-plan-reading');
     planReading.id = 'pw-read-panel';
@@ -389,6 +460,10 @@ export function createWorkbench({ getState, onAction }) {
     planEditing.id = 'pw-edit-panel';
     planEditing.setAttribute('role', 'tabpanel');
     planEditing.setAttribute('aria-labelledby', 'pw-edit-tab');
+    const planAnalysis = el('section', 'pw-plan-analysis pw-plan-reading');
+    planAnalysis.id = 'pw-analysis-panel';
+    planAnalysis.setAttribute('role', 'tabpanel');
+    planAnalysis.setAttribute('aria-labelledby', 'pw-analysis-tab');
     const planXml = el('textarea', 'pw-input pw-xml-editor');
     planXml.rows = 15;
     planXml.spellcheck = false;
@@ -418,7 +493,7 @@ export function createWorkbench({ getState, onAction }) {
     primaryPlanActions.append(rerollButton, writeButton);
     const manualHint = el('p', 'pw-hint pw-manual-hint', '填入后不会自动发送；若作为普通聊天消息发送，大纲可能进入历史与记忆。');
     const draftHint = el('p', 'pw-hint pw-draft-hint', '有尚未应用的修改。请先应用修改，再重生成、复制或扩写。');
-    planSection.append(planHeader, planReading, planEditing, outputActions, primaryPlanActions, draftHint, manualHint);
+    planSection.append(planHeader, planReading, planEditing, planAnalysis, outputActions, primaryPlanActions, draftHint, manualHint);
     outlinePage.append(pageHeading, steps, inputField, generationActions, planSection);
 
     const promptEditorPage = el('section', 'pw-prompt-editor-page');
@@ -681,7 +756,7 @@ export function createWorkbench({ getState, onAction }) {
     footerStatus.setAttribute('role', 'status');
     footer.append(footerDot, footerStatus);
     shell.append(footer);
-    const reordering = installPromptReordering(presetGroups, { isBlocked: () => isBlocked() || savingPrompt,
+    const reordering = installPromptReordering(presetGroups, { isBlocked: () => isBlocked() || savingPrompt || groupSaving || Boolean(groupRange),
         onMove: ({ id, beforeId }) => movePrompt(id, beforeId) });
     document.body.append(dialog);
 
@@ -717,6 +792,128 @@ export function createWorkbench({ getState, onAction }) {
         const row = [...presetGroups.querySelectorAll('.pw-prompt-row')].find(node => node.dataset.promptId === promptListReturn.id);
         if (row?.getClientRects().length) row.scrollIntoView({ block: 'nearest' });
     }
+    function orderedPrompts(preset = getState().preset) {
+        const prompts = new Map((preset?.prompts || []).map(item => [item.identifier, item]));
+        const ids = [...new Set([...(preset?.order || []).map(item => typeof item === 'string' ? item : item.identifier), ...prompts.keys()])];
+        return ids.filter(id => prompts.has(id)).map(id => prompts.get(id));
+    }
+    function groupDraftDirty() {
+        if (groupRange) return true;
+        const original = getState().preset?.groups?.find(item => item.id === groupManage?.id);
+        return groupManage?.mode === 'rename' && groupManage.name !== original?.name;
+    }
+    function clearGroupFlow() {
+        groupRange = null; groupManage = null; pendingGroupLeave = null; groupLeaveNotice.hidden = true;
+    }
+    function focusGroup(id) {
+        const group = [...presetGroups.querySelectorAll('.pw-group')].find(node => node.dataset.groupId === id);
+        if (group) { group.scrollIntoView({ block: 'nearest' }); group.querySelector('summary')?.focus({ preventScroll: true }); }
+    }
+    function beginGroupRange(id) {
+        if (isBlocked() || savingPrompt || groupSaving || groupRange) return;
+        withUnsavedGuard(() => {
+            const state = getState(), ids = orderedPrompts().map(item => item.identifier);
+            if (!ids.includes(id)) return;
+            resetEditor(); groupManage = null;
+            groupRange = { presetId: state.activePresetId, startId: id, endId: null, name: '', order: JSON.stringify(ids), returnTop: body.scrollTop };
+            for (const menu of presetGroups.querySelectorAll('.pw-row-menu')) menu.hidden = true;
+            render(); body.scrollTop = 0;
+            const start = [...groupRangeList.querySelectorAll('button')].find(node => node.dataset.promptId === id);
+            start?.scrollIntoView({ block: 'nearest' }); start?.focus({ preventScroll: true });
+        });
+    }
+    function cancelGroupRange() {
+        if (groupSaving) return;
+        const previous = groupRange; clearGroupFlow(); render();
+        if (!previous) return;
+        body.scrollTop = previous.returnTop;
+        const row = [...presetGroups.querySelectorAll('.pw-prompt-row')].find(node => node.dataset.promptId === previous.startId);
+        row?.scrollIntoView({ block: 'nearest' }); row?.querySelector('.pw-row-more')?.focus({ preventScroll: true });
+    }
+    async function saveGroupRange() {
+        if (isBlocked() || groupSaving || !groupRange?.endId) return;
+        if (!groupRange.name.trim()) { statusMessage.textContent = '请填写分组名称。'; groupRangeName.focus(); return; }
+        const draft = { ...groupRange }; groupSaving = true; render();
+        const result = await act('createPromptGroup', { startId: draft.startId, endId: draft.endId, name: draft.name.trim(), presetId: draft.presetId });
+        groupSaving = false;
+        if (result?.id && getState().activePresetId === draft.presetId) {
+            clearGroupFlow(); groupOpen.set(result.id, true); presetSignature = ''; render(); focusGroup(result.id);
+        } else render();
+    }
+    function openGroupManagement(id, mode = 'menu') {
+        if (isBlocked() || groupSaving || groupRange) return;
+        withUnsavedGuard(() => {
+            const group = getState().preset?.groups?.find(item => item.id === id);
+            if (!group) return;
+            resetEditor();
+            const closing = groupManage?.id === id && groupManage.mode === mode;
+            groupManage = closing ? null : { id, presetId: getState().activePresetId, mode, name: group.name };
+            if (!closing) groupOpen.set(id, true);
+            presetSignature = ''; render();
+            const node = [...presetGroups.querySelectorAll('.pw-group')].find(item => item.dataset.groupId === id);
+            node?.querySelector('.pw-group-manage')?.scrollIntoView({ block: 'nearest' });
+            if (mode === 'rename') node?.querySelector('.pw-group-manage input')?.focus({ preventScroll: true });
+        });
+    }
+    async function saveGroupManagement(type) {
+        if (isBlocked() || groupSaving || !groupManage) return;
+        const draft = { ...groupManage };
+        if (type === 'renamePromptGroup' && !draft.name.trim()) { statusMessage.textContent = '请填写分组名称。'; return; }
+        if (getState().activePresetId !== draft.presetId) { clearGroupFlow(); render(); return; }
+        const firstId = getState().preset?.prompts?.find(item => {
+            const map = getState().preset.promptGroups?.[item.identifier]; return (typeof map === 'string' ? map : map?.groupId) === draft.id;
+        })?.identifier;
+        groupSaving = true; render();
+        const result = await act(type, { id: draft.id, name: draft.name.trim(), presetId: draft.presetId });
+        groupSaving = false;
+        if (result !== false) {
+            clearGroupFlow();
+            if (type === 'dissolvePromptGroup') groupOpen.set('__ungrouped', true);
+            presetSignature = ''; render();
+            if (type === 'renamePromptGroup') focusGroup(draft.id);
+            else [...presetGroups.querySelectorAll('.pw-prompt-row')].find(node => node.dataset.promptId === firstId)?.scrollIntoView({ block: 'nearest' });
+        } else render();
+    }
+    function renderGroupTools(state) {
+        const selecting = Boolean(groupRange);
+        groupRangePanel.hidden = !selecting;
+        for (const node of [presetSelectRow, presetSaveStatus, presetToolbar, presetDrawers, presetGroups]) node.hidden = selecting;
+        undoNotice.hidden = selecting || !state.undoDeletion;
+        presetWarnings.textContent = (state.preset?.warnings || []).join(' ');
+        presetWarnings.hidden = selecting || !presetWarnings.textContent;
+        if (!selecting) return;
+        const prompts = orderedPrompts(state.preset), ids = prompts.map(item => item.identifier);
+        if (state.activePresetId !== groupRange.presetId || JSON.stringify(ids) !== groupRange.order) {
+            clearGroupFlow(); statusMessage.textContent = '预设顺序已变化，请重新选择分组范围。'; renderGroupTools(state); return;
+        }
+        const start = ids.indexOf(groupRange.startId), end = ids.indexOf(groupRange.endId);
+        const low = Math.min(start, end), high = Math.max(start, end), count = end < 0 ? 0 : high - low + 1;
+        groupRangeStatus.textContent = end < 0 ? `起点：${prompts[start].name || groupRange.startId} · 请选择终点` : `已选 ${count} 条 · 包含起点与终点，发送顺序保持不变`;
+        groupRangeForm.hidden = end < 0;
+        setInputValue(groupRangeName, groupRange.name);
+        const signature = JSON.stringify([ids, groupRange.startId, groupRange.endId]);
+        if (groupRangeList.dataset.signature !== signature) {
+            const top = groupRangeList.scrollTop;
+            groupRangeList.dataset.signature = signature;
+            groupRangeList.replaceChildren(...prompts.map((prompt, index) => {
+                const name = prompt.name?.split('｜').slice(1).join('｜') || prompt.name || prompt.identifier;
+                const node = button('', () => {
+                    if (isBlocked() || groupSaving || !groupRange) return;
+                    groupRange.endId = prompt.identifier; renderGroupTools(getState());
+                    [...groupRangeList.querySelectorAll('button')].find(item => item.dataset.promptId === prompt.identifier)?.focus({ preventScroll: true });
+                    groupRangeForm.scrollIntoView({ block: 'nearest' });
+                }, { className: 'pw-group-range-row' });
+                node.dataset.promptId = prompt.identifier;
+                node.setAttribute('aria-label', `以此为终点：${name}`);
+                node.setAttribute('aria-pressed', String(end >= 0 && index >= low && index <= high));
+                const tags = [index === start ? '起点' : '', index === end ? '终点' : ''].filter(Boolean);
+                node.replaceChildren(el('span', 'pw-group-range-number', String(index + 1)), el('span', 'pw-group-range-name', name), el('span', 'pw-group-range-tag', tags.join(' / ')));
+                return node;
+            }));
+            groupRangeList.scrollTop = top;
+        }
+        for (const node of groupRangePanel.querySelectorAll('button,input')) node.disabled = isBlocked(state) || groupSaving;
+    }
     function guardPresetChange(next, { keepName = false } = {}) {
         withUnsavedGuard(() => {
             if (!presetNameDirty || keepName) { next(); return; }
@@ -749,6 +946,7 @@ export function createWorkbench({ getState, onAction }) {
         themeSelect.value = theme;
         setInputValue(fontSizeInput, fontSize); setInputValue(lineHeightInput, lineHeight);
         dialog.dataset.theme = ['system', 'light', 'dark', 'host'].includes(theme) ? theme : 'system';
+        syncHostSurface();
         const font = Number(fontSize), height = Number(lineHeight);
         const saved = savedAppearance();
         dialog.style.setProperty('--pw-font-size', `${Number.isFinite(font) && font >= 10 && font <= 24 ? font : saved.fontSize}px`);
@@ -757,6 +955,16 @@ export function createWorkbench({ getState, onAction }) {
         appearanceStatus.classList.toggle('pw-error', Boolean(appearanceFeedback));
         for (const node of appearancePage.querySelectorAll('button,input,select')) node.disabled = isBlocked() || savingAppearance;
         appearanceSave.disabled = isBlocked() || savingAppearance || !appearanceDirty;
+    }
+    function syncHostSurface() {
+        if (destroyed || dialog.dataset.theme !== 'host') return;
+        const hostColor = getComputedStyle(dialog).getPropertyValue('--SmartThemeBlurTintColor').trim();
+        hostColorProbe.style.setProperty('color', '#11171e', 'important');
+        if (hostColor) hostColorProbe.style.setProperty('color', hostColor, 'important');
+        const color = getComputedStyle(hostColorProbe).color;
+        const match = color.match(/^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/i);
+        const opaque = match ? `rgb(${match.slice(1, 4).map(value => Math.max(0, Math.min(255, Math.round(Number(value))))).join(', ')})` : 'rgb(17, 23, 30)';
+        if (dialog.style.getPropertyValue('--pw-host-opaque-bg') !== opaque) dialog.style.setProperty('--pw-host-opaque-bg', opaque);
     }
     async function saveAppearance(defaults) {
         if (isBlocked() || savingAppearance) return;
@@ -785,7 +993,7 @@ export function createWorkbench({ getState, onAction }) {
     }
     function hasUnsavedChanges() {
         const state = getState();
-        if (dirtyPrompt || dirtyPlan || presetNameDirty || appearanceDirty || apiDirty()) return true;
+        if (groupDraftDirty() || dirtyPrompt || dirtyPlan || presetNameDirty || appearanceDirty || apiDirty()) return true;
         const settings = state.settings || {};
         if (Object.entries(settingsFields).some(([key, node]) => node.value !== String(settings[key] ?? ''))) return true;
         return modeSelect.value !== (settings.mode || 'review') || autoOnSend.checked !== Boolean(settings.autoOnSend)
@@ -827,7 +1035,11 @@ export function createWorkbench({ getState, onAction }) {
         else rememberKey.checked = Boolean(getState().rememberApiKey);
     }
     function withUnsavedGuard(next) {
-        if (savingPrompt) return;
+        if (savingPrompt || groupSaving) return;
+        if (groupDraftDirty()) {
+            pendingGroupLeave = next; activeTab = 'presets'; groupLeaveNotice.hidden = false;
+            renderTabs(); groupLeaveNotice.scrollIntoView({ block: 'nearest' }); return;
+        }
         if (!dirtyPrompt) { next(); return; }
         pendingLeave = next;
         activeTab = 'presets';
@@ -852,20 +1064,21 @@ export function createWorkbench({ getState, onAction }) {
         dirtyPrompt = false;
     }
     function newPrompt(groupId = '') {
-        if (isBlocked() || savingPrompt) return;
+        if (isBlocked() || savingPrompt || groupSaving || groupRange) return;
         rememberPromptListPosition();
         withUnsavedGuard(() => {
-            resetEditor(); creatingPrompt = true; activeTab = 'presets';
+            clearGroupFlow(); resetEditor(); creatingPrompt = true; activeTab = 'presets';
+            if (groupId && !getState().preset?.groups?.some(group => group.id === groupId)) groupId = '';
             loadPromptDraft({ name: '', content: '', role: 'system' }, groupId);
             render(); body.scrollTop = 0; main.scrollTop = 0;
             promptNameInput.focus({ preventScroll: true });
         });
     }
     function openPrompt(id) {
-        if (isBlocked() || savingPrompt || (selectedPrompt === id && !creatingPrompt)) return;
+        if (isBlocked() || savingPrompt || groupSaving || groupRange || (selectedPrompt === id && !creatingPrompt)) return;
         rememberPromptListPosition(id);
         withUnsavedGuard(() => {
-            resetEditor(); selectedPrompt = id; activeTab = 'presets';
+            clearGroupFlow(); resetEditor(); selectedPrompt = id; activeTab = 'presets';
             render(); body.scrollTop = 0; main.scrollTop = 0;
             promptName.focus?.({ preventScroll: true });
         });
@@ -895,7 +1108,7 @@ export function createWorkbench({ getState, onAction }) {
         render();
     }
     function duplicatePrompt(id) {
-        if (!id || isBlocked() || savingPrompt) return;
+        if (!id || isBlocked() || savingPrompt || groupSaving || groupRange) return;
         const prompt = getState().preset?.prompts?.find(item => item.identifier === id);
         if (prompt?.marker) { statusMessage.textContent = '上下文占位由酒馆提供，不能复制。'; return; }
         withUnsavedGuard(async () => {
@@ -904,7 +1117,7 @@ export function createWorkbench({ getState, onAction }) {
         });
     }
     function movePrompt(id, beforeId) {
-        if (isBlocked() || savingPrompt) return;
+        if (isBlocked() || savingPrompt || groupSaving || groupRange) return;
         const discardDraft = dirtyPrompt;
         withUnsavedGuard(() => {
             if (discardDraft) resetEditor();
@@ -912,7 +1125,7 @@ export function createWorkbench({ getState, onAction }) {
         });
     }
     function requestDeletePrompt(id) {
-        if (isBlocked() || savingPrompt) return;
+        if (isBlocked() || savingPrompt || groupSaving || groupRange) return;
         withUnsavedGuard(() => {
             resetEditor(); selectedPrompt = id; activeTab = 'presets'; render();
             promptDelete.click();
@@ -959,19 +1172,20 @@ export function createWorkbench({ getState, onAction }) {
         renderPresetSaveStatus();
     }
     function renderPresetSaveStatus() {
-        presetSaveStatus.textContent = dirtyPrompt ? '条目修改未保存，请先保存条目。' : presetNameDirty ? '预设名称尚未保存。' : '当前预设已保存。';
+        presetSaveStatus.textContent = dirtyPrompt ? '条目修改未保存，请先保存条目。' : groupDraftDirty() ? '分组修改尚未保存。' : presetNameDirty ? '预设名称尚未保存。' : '当前预设已保存。';
     }
     function renderPreset(state) {
         const preset = state.preset || { prompts: [], groups: [], order: [] };
         if (seenPresetId !== state.activePresetId) {
             seenPresetId = state.activePresetId; presetNameDirty = false; presetDeleteNotice.hidden = true; presetUnsaved.hidden = true;
             promptListReturn = null;
+            clearGroupFlow();
             if (activeTab === 'presets') body.scrollTop = 0;
         }
         if (!presetNameDirty) setInputValue(presetNameInput, preset.name || '');
         undoNotice.hidden = !state.undoDeletion;
         undoText.textContent = state.undoDeletion ? `已删除「${state.undoDeletion.name || '条目'}」` : '';
-        const signature = JSON.stringify([state.activePresetId, (state.presetLibrary || []).map(p => [p.id, p.name]), preset.name, preset.prompts, preset.groups, preset.order, preset.promptGroups, state.inspectionStale,
+        const signature = JSON.stringify([state.activePresetId, (state.presetLibrary || []).map(p => [p.id, p.name]), preset.name, preset.prompts, preset.groups, preset.order, preset.promptGroups, state.inspectionStale, groupManage?.id, groupManage?.mode,
             (state.promptInspection?.entries || []).map(entry => [entry.id, entry.tokens, entry.status, entry.order, entry.enabled])]);
         if (signature !== presetSignature) {
             presetSignature = signature;
@@ -993,6 +1207,7 @@ export function createWorkbench({ getState, onAction }) {
             for (const group of groups) {
                 const prompts = promptList.filter(p => group.id === '__ungrouped' ? !groups.some(g => g.id !== '__ungrouped' && g.id === groupFor(p.identifier)) : groupFor(p.identifier) === group.id);
                 const details = el('details', 'pw-group');
+                details.dataset.groupId = group.id;
                 details.open = groupOpen.has(group.id) ? groupOpen.get(group.id) : group.id === preferredGroup;
                 details.addEventListener('toggle', () => groupOpen.set(group.id, details.open));
                 const summary = el('summary', 'pw-group-summary');
@@ -1005,6 +1220,26 @@ export function createWorkbench({ getState, onAction }) {
                     const toggle = makeSwitch(`启用分组：${group.name}`, group.enabled !== false, enabled => act('groupToggle', { id: group.id, enabled }));
                     toggle.addEventListener('click', event => event.stopPropagation());
                     summary.append(toggle);
+                    const manage = button('', () => openGroupManagement(group.id), { className: 'pw-group-more', iconName: 'more', title: `管理分组：${group.name}` });
+                    manage.setAttribute('aria-label', `管理分组：${group.name}`);
+                    manage.setAttribute('aria-expanded', String(groupManage?.id === group.id));
+                    manage.addEventListener('click', event => event.stopPropagation());
+                    summary.append(manage);
+                }
+                const management = el('div', 'pw-group-manage'); management.hidden = groupManage?.id !== group.id;
+                if (!management.hidden) {
+                    const actions = el('div', 'pw-group-manage-actions');
+                    const dismiss = () => { groupManage = null; pendingGroupLeave = null; groupLeaveNotice.hidden = true; presetSignature = ''; render(); focusGroup(group.id); };
+                    if (groupManage.mode === 'rename') {
+                        const name = control('text', '分组名称'); name.value = groupManage.name; name.maxLength = 200; name.setAttribute('aria-label', '分组新名称');
+                        name.addEventListener('input', () => { if (groupManage?.id === group.id) groupManage.name = name.value; renderPresetSaveStatus(); });
+                        management.append(field('分组名称', name));
+                        actions.append(button('保存分组名称', () => saveGroupManagement('renamePromptGroup'), { className: 'pw-primary' }), button('取消改名', dismiss));
+                    } else if (groupManage.mode === 'dissolve') {
+                        management.append(el('p', 'pw-hint', '解散后条目回到未分组，内容和发送顺序保留，已关闭的条目保持关闭。'));
+                        actions.append(button('确认解散分组', () => saveGroupManagement('dissolvePromptGroup'), { className: 'pw-danger' }), button('取消解散', dismiss));
+                    } else actions.append(button('改名', () => openGroupManagement(group.id, 'rename')), button('解散分组', () => openGroupManagement(group.id, 'dissolve')), button('收起', dismiss));
+                    management.append(actions);
                 }
                 const items = el('div', 'pw-group-items');
                 items.classList.toggle('pw-group-off', group.enabled === false);
@@ -1042,12 +1277,12 @@ export function createWorkbench({ getState, onAction }) {
                     const up = button('上移', () => move(-1), { iconName: 'up' }); up.dataset.disabled = String(promptIndex === 0);
                     const down = button('下移', () => move(1), { iconName: 'down' }); down.dataset.disabled = String(promptIndex === prompts.length - 1);
                     const copy = button('复制', () => duplicatePrompt(prompt.identifier), { iconName: 'copy' }); copy.dataset.disabled = String(Boolean(prompt.marker)); copy.title = prompt.marker ? '上下文占位不能复制' : '创建副本';
-                    menu.append(button('编辑', () => openPrompt(prompt.identifier), { iconName: 'edit' }), up, down, copy, button('删除', () => requestDeletePrompt(prompt.identifier), { iconName: 'trash', className: 'pw-danger' }));
+                    menu.append(button('创建分组', () => beginGroupRange(prompt.identifier), { iconName: 'add' }), button('编辑', () => openPrompt(prompt.identifier), { iconName: 'edit' }), up, down, copy, button('删除', () => requestDeletePrompt(prompt.identifier), { iconName: 'trash', className: 'pw-danger' }));
                     row.classList.toggle('pw-row-inactive', !enabled);
                     row.append(handle, edit, token, toggle, more, menu); items.append(row);
                 }
                 items.append(button('在此分组新增', () => newPrompt(group.id === '__ungrouped' ? '' : group.id), { iconName: 'add', className: 'pw-group-add' }));
-                details.append(summary, items, frameOrnaments()); presetGroups.append(details);
+                details.append(summary, management, items, frameOrnaments()); presetGroups.append(details);
             }
             presetWarnings.textContent = (preset.warnings || []).join(' ');
             presetWarnings.hidden = !presetWarnings.textContent;
@@ -1158,6 +1393,12 @@ export function createWorkbench({ getState, onAction }) {
         importFormatStatus.textContent = !format ? '未找到内置格式条目，请检查已有预设是否明确输出此结构。' : !enabled || !groupEnabled ? '格式条目已关闭，可能无法解析。' : '内置格式条目已启用，可编辑内容或关闭；关闭前请确保另有相同输出结构。';
         importReviewMessage.textContent = state.importReview?.message || '';
         importReviewMessage.hidden = !importReviewMessage.textContent;
+        const adjusted = state.importReview?.autoDisabledCount || 0;
+        importAdjustmentStatus.hidden = !adjusted;
+        importAdjustmentStatus.textContent = `导入时自动整理 ${adjusted} 项，当前仍关闭 ${state.importReview?.restorableCount || 0} 项。`;
+        restoreImportButton.hidden = !adjusted;
+        restoreImportButton.dataset.disabled = String(!state.importReview?.restorableCount);
+        restoreImportButton.disabled = isBlocked(state) || !state.importReview?.restorableCount;
         const items = state.importReview?.items || [];
         const signature = JSON.stringify(items);
         if (importReviewItems.dataset.signature === signature) return;
@@ -1322,14 +1563,33 @@ export function createWorkbench({ getState, onAction }) {
                 block('本轮结束状态', plan.endState || plan.end_state, 'pw-end-state');
             }
         }
+        const analysis = state.planningAnalysis;
+        const nextAnalysisSignature = JSON.stringify([analysis || null, Boolean(state.plan)]);
+        if (analysisSignature !== nextAnalysisSignature) {
+            analysisSignature = nextAnalysisSignature;
+            planAnalysis.replaceChildren();
+            const reasoning = typeof analysis?.reasoning === 'string' ? analysis.reasoning : '';
+            const supplement = typeof analysis?.supplement === 'string' ? analysis.supplement : '';
+            if (reasoning || supplement) {
+                planAnalysis.append(el('p', 'pw-hint', '仅供查看，不注入正文请求。'));
+                if (analysis.edited) planAnalysis.append(el('p', 'pw-hint pw-analysis-notice', '对应生成时的大纲；当前大纲已手动修改。'));
+                if (analysis.truncated) planAnalysis.append(el('p', 'pw-hint pw-analysis-notice', '返回的分析较长，此处仅保留部分文本。'));
+                for (const [title, text] of [['接口分析', reasoning], ['附加返回', supplement]]) {
+                    if (!text) continue;
+                    const section = el('section', 'pw-analysis-block');
+                    section.append(el('h4', '', title), el('pre', 'pw-analysis-text', text));
+                    planAnalysis.append(section);
+                }
+            } else planAnalysis.append(el('p', 'pw-hint', analysis ? '本次未返回分析文本。' : state.plan ? '本页未保留这份大纲的分析文本。' : '先生成本轮大纲，再查看接口返回的分析文本。'));
+        }
         planReading.hidden = planView !== 'read';
         planEditing.hidden = planView !== 'edit';
-        readButton.classList.toggle('pw-selected', planView === 'read');
-        editButton.classList.toggle('pw-selected', planView === 'edit');
-        readButton.setAttribute('aria-selected', String(planView === 'read'));
-        editButton.setAttribute('aria-selected', String(planView === 'edit'));
-        readButton.tabIndex = planView === 'read' ? 0 : -1;
-        editButton.tabIndex = planView === 'edit' ? 0 : -1;
+        planAnalysis.hidden = planView !== 'analysis';
+        for (const [key, node] of planTabEntries) {
+            node.classList.toggle('pw-selected', planView === key);
+            node.setAttribute('aria-selected', String(planView === key));
+            node.tabIndex = planView === key ? 0 : -1;
+        }
         renderPlanActions();
     }
     function renderPlanActions() {
@@ -1377,7 +1637,7 @@ export function createWorkbench({ getState, onAction }) {
         renderInspection(state);
         renderHostCatalog(state);
         renderImportReview(state);
-        for (const node of presets.querySelectorAll('button,input,select,textarea')) node.disabled = isBlocked(state) || savingPrompt || node.dataset.disabled === 'true';
+        for (const node of presets.querySelectorAll('button,input,select,textarea')) node.disabled = isBlocked(state) || savingPrompt || groupSaving || node.dataset.disabled === 'true';
         for (const node of [...configPanel.querySelectorAll('button,input,select,textarea'), ...settingsPanel.querySelectorAll('button,input,select,textarea')]) node.disabled = isBlocked(state);
         for (const node of worldbooksPage.querySelectorAll('button,input,select,textarea')) node.disabled = isBlocked(state) || node.dataset.disabled === 'true';
         apiProfileDeleteButton.disabled = isBlocked(state) || (state.apiProfiles?.length || 0) <= 1;
@@ -1391,6 +1651,7 @@ export function createWorkbench({ getState, onAction }) {
         renderPlan(state);
         workshopTools.render();
         renderTabs();
+        renderGroupTools(state);
     }
     function onViewport() {
         // Visual viewport keeps the close control and navigation reachable above the mobile keyboard.
@@ -1442,10 +1703,13 @@ export function createWorkbench({ getState, onAction }) {
         event.preventDefault(); event.returnValue = '';
     }
     window.addEventListener('beforeunload', beforeUnload);
+    const hostThemeObserver = typeof MutationObserver === 'function' ? new MutationObserver(syncHostSurface) : null;
+    for (const node of [document.documentElement, document.body]) hostThemeObserver?.observe(node, { attributes: true, attributeFilter: ['class', 'style'] });
     function destroy() {
         if (dialog.open) dialog.close();
         afterClose();
         destroyed = true;
+        hostThemeObserver?.disconnect();
         workshopTools.destroy();
         reordering.destroy();
         dialog.remove();

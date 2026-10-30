@@ -9,8 +9,10 @@ import { buildPromptInspection } from './lib/prompt-inspector.js';
 import { getHostCatalog, readHostPreset, readExtraWorldbooks } from './lib/host-library.js';
 import { createRuntimeLog } from './lib/runtime-log.js';
 import { createWriterQuickActions } from './lib/quick-actions.js';
+import { createWorkbenchEntryPoints } from './lib/entry-points.js';
 import { createUpdater } from './lib/updater.js';
 import { saveSettingsBeforeReload } from './lib/settings-save.js';
+import { analyzeImportedPreset } from './lib/import-advisor.js';
 import { cleanSettings, proseTarget, assertChat, storySnapshot, collectPlanningContext, createSTTransport, injectForTurn, clearInjection, describeInjection, buildInjectionText } from './lib/host.js';
 
 const STORE = 'plot_workshop';
@@ -30,13 +32,21 @@ function readPlanningPreset(input, options) {
     const marker = source?.extensions?.plot_workshop;
     const preserveSelection = marker?.schema_version === 1 && marker?.preserve_prompt_selection === true;
     if (preserveSelection) delete source.extensions.plot_workshop;
-    return { preset: normalizePreset(data, options), preserveSelection };
+    const preset = normalizePreset(data, options);
+    if (preserveSelection && marker.import_advice) {
+        const ids = new Set(preset.prompts.map(item => item.identifier));
+        const records = key => Array.isArray(marker.import_advice[key]) ? marker.import_advice[key].filter(item => item
+            && ids.has(item.id) && typeof item.reason === 'string').slice(0, 2000).map(item => ({ id: item.id, reason: item.reason.slice(0, 500) })) : [];
+        preset.importAdvice = { disable: records('disable'), review: records('review') };
+    }
+    return { preset, preserveSelection };
 }
 
 function writePlanningPreset(preset) {
     const data = exportPreset(preset);
     // A later import must preserve intentional deletions, including the output protocol.
     data.extensions.plot_workshop = { schema_version: 1, preserve_prompt_selection: true };
+    if (preset.importAdvice) data.extensions.plot_workshop.import_advice = structuredClone(preset.importAdvice);
     return data;
 }
 
@@ -75,7 +85,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     const historicalSecrets = new Set();
     const extraWorldbooksByChat = Object.fromEntries(Object.entries(saved.extraWorldbooksByChat || {}).map(([id, names]) => [id, bookNames(names)]));
     const state = { settings: cleanSettings({ ...initialSettings, ...connectionSettings(activeApi) }),
-        preset: readPlanningPreset(activePreset.preset).preset, apiKey: '', input: '', plan: null, rawPlan: '',
+        preset: readPlanningPreset(activePreset.preset).preset, apiKey: '', input: '', plan: null, rawPlan: '', planningAnalysis: null,
         apiProfiles, activeApiProfileId: activeApi.id, rememberApiKey: false, apiStatus: '', apiBusy: false, models: [],
         presetLibrary, activePresetId: activePreset.id, planVersions: [],
         promptPreview: null, promptInspection: null, inspectionStale: true, diagnosis: null,
@@ -95,6 +105,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     // Only the current page keeps this receipt; raw memory is never persisted in chat/settings.
     let pendingWriterReceipt = null, writerReceipt = null, writerReplay = null;
     let quickActions = null;
+    let entryPoints = null;
     const versionAnchors = new Map();
     const listeners = [];
     const view = viewFactory({ getState: () => state, onAction });
@@ -133,10 +144,18 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         if (state.promptPreview) state.promptPreview.valid = !state.inspectionStale && !!anchor;
         const protocol = state.preset.prompts.find(item => item.identifier === 'outline_output');
         const active = id => state.preset.order.some(item => item.identifier === id && item.enabled !== false) && state.preset.groups.find(g => g.id === state.preset.promptGroups[id])?.enabled !== false;
+        const adjustments = (state.preset.importAdvice?.disable || []).filter(item => state.preset.prompts.some(prompt => prompt.identifier === item.id));
+        const reviews = state.preset.importAdvice?.review || [];
+        const adjustmentById = new Map(adjustments.map(item => [item.id, item]));
+        const reviewById = new Map(reviews.map(item => [item.id, item]));
         state.importReview = { message: !protocol ? '未找到内置格式条目，请检查预设是否明确要求Vespera的固定输出结构。' : !active(protocol.identifier) ? '格式条目已关闭，模型输出可能无法解析。' : '格式条目已启用；导入预设中的其他输出要求仍需检查。',
-            items: state.preset.prompts.filter(item => !item.marker && (item.identifier === 'outline_output' || (!item.identifier.startsWith('outline_') && /正文|输出|content|格式|状态栏|摘要|总结|文风|视角|字数|八股|自检/i.test(item.name)))).map(item => ({
+            autoDisabledCount: adjustments.length,
+            restorableCount: adjustments.filter(item => state.preset.order.some(entry => entry.identifier === item.id && entry.enabled === false)).length,
+            items: state.preset.prompts.filter(item => !item.marker && (adjustmentById.has(item.identifier) || reviewById.has(item.identifier) || item.identifier === 'outline_output' || (!item.identifier.startsWith('outline_') && /正文|输出|content|格式|状态栏|摘要|总结|文风|视角|字数|八股|自检/i.test(item.name)))).map(item => ({
                 id: item.identifier, name: item.name, kind: item.identifier === 'outline_output' ? 'format' : 'review',
-                reason: item.identifier === 'outline_output' ? '标签名称、层级及顺序是固定接口；故事内容可修改。' : '候选冲突：检查是否要求直接写正文、额外组件或另一套输出格式。不会自动关闭。',
+                reason: adjustmentById.has(item.identifier) ? `${state.preset.order.some(entry => entry.identifier === item.identifier && entry.enabled !== false) ? '已重新启用' : '导入时自动关闭'}：${adjustmentById.get(item.identifier).reason}`
+                    : item.identifier === 'outline_output' ? '标签名称、层级及顺序是固定接口；故事内容可修改。'
+                    : reviewById.get(item.identifier)?.reason || '保留待检查：是否要求直接写正文、额外组件或另一套输出格式。',
             })) };
         view.render();
     }
@@ -263,6 +282,16 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         if (groupId === null) delete state.preset.promptGroups[id];
         else state.preset.promptGroups[id] = groupId;
     }
+    function groupName(value) {
+        if (typeof value !== 'string' || !value.trim()) throw new Error('请输入分组名称。');
+        return value.trim();
+    }
+    function keepGroupMembersDisabled(ids) {
+        const disabledGroups = new Set(state.preset.groups.filter(group => group.enabled === false).map(group => group.id));
+        for (const entry of state.preset.order) {
+            if (ids.has(entry.identifier) && disabledGroups.has(state.preset.promptGroups[entry.identifier])) entry.enabled = false;
+        }
+    }
     function nextPromptId() {
         let id;
         do { id = `plot_workshop_${Date.now().toString(36)}_${(++promptSequence).toString(36)}`; }
@@ -344,7 +373,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         } catch { /* Session storage may be unavailable; the visible draft remains usable. */ }
     }
     function restoreDraft() {
-        state.plan = null; state.rawPlan = ''; anchor = null; memory = null;
+        state.plan = null; state.rawPlan = ''; state.planningAnalysis = null; anchor = null; memory = null;
         state.planVersions = []; state.diagnosis = null; state.promptPreview = null;
         state.promptInspection = null; inspectionAnchor = null; diagnosisAnchor = null; currentVersionId = null; versionAnchors.clear();
         try {
@@ -442,7 +471,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         if (presets.length) { state.activePresetId = presets[0].id; state.preset = readPlanningPreset(presets[0].preset).preset; }
         state.planVersions = [...state.planVersions, ...versions].slice(-20);
         state.extraWorldbooks = data.extraWorldbooks;
-        state.plan = null; state.rawPlan = ''; anchor = null; memory = null; inspectionAnchor = null; diagnosisAnchor = null;
+        state.plan = null; state.rawPlan = ''; state.planningAnalysis = null; anchor = null; memory = null; inspectionAnchor = null; diagnosisAnchor = null;
         state.promptInspection = null; state.promptPreview = null; state.diagnosis = null; currentVersionId = null;
         resetDetection(); clearDeletionUndo(); clearInjection(getContext()); persist(); cacheDraft();
         log('success', 'backup.imported', '备份已导入为新方案；旧大纲仅供查看，须重新规划。');
@@ -551,7 +580,9 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             ...(state.settings.maxTokens !== '' ? { maxTokens: Number(state.settings.maxTokens) } : {}),
             transport: createSTTransport(getContext, fetchImpl), DOMParser: globalThis.DOMParser });
         check();
-        state.plan = result; state.rawPlan = result.xml;
+        const { raw: returnedText, analysis, ...plan } = result;
+        state.plan = plan; state.rawPlan = plan.xml;
+        state.planningAnalysis = analysis ? { ...analysis, edited: false } : { reasoning: '', supplement: '', truncated: false, edited: false };
         log('success', 'planner.request.completed', '本轮大纲已生成并通过格式校验。');
         anchor = { story: initialStory, baseStory, config: initialConfig, draft: initialDraft,
             input: userInput, committed, chatId: getContext().chatId, worldRevision, animaConfig: planningAnimaConfig };
@@ -702,7 +733,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
                 'apiProfileSelect', 'apiProfileNew', 'apiProfileSave', 'apiProfileSaveAs', 'apiProfileDelete', 'saveSettings', 'fetchModels', 'testApi',
                 'presetSave', 'presetSaveAs', 'presetSelect', 'presetDelete', 'presetNew', 'detectAnima',
                 'inspectPrompts', 'diagnose', 'applyDiagnosis', 'restoreVersion', 'importBackup', 'exportBackup'];
-            editable.push('refreshHostCatalog', 'importHostPreset', 'extraWorldbooks', 'saveAppearance');
+            editable.push('refreshHostCatalog', 'importHostPreset', 'extraWorldbooks', 'saveAppearance', 'restoreImportDisabled', 'createPromptGroup', 'renamePromptGroup', 'dissolvePromptGroup');
             if ((state.busy || state.apiBusy || state.animaChecking || state.libraryBusy) && editable.includes(type)) throw new Error('请先完成或取消当前操作，再修改输入或设置。');
             if ((state.apiBusy || state.animaChecking || state.libraryBusy) && ['generate', 'rerollPlan', 'confirmAndWrite'].includes(type)) throw new Error('请先完成或取消 API 操作、目录读取或 Anima 检测。');
             if (type === 'input') { state.input = payload.value; render(); return; }
@@ -730,7 +761,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             if (type === 'restoreVersion') {
                 const version = state.planVersions.find(item => item.id === payload.id);
                 if (!version) throw new Error('大纲版本已不存在。');
-                state.plan = parseContent(version.xml); state.rawPlan = state.plan.xml; state.input = version.input;
+                state.plan = parseContent(version.xml); state.rawPlan = state.plan.xml; state.planningAnalysis = null; state.input = version.input;
                 const stored = versionAnchors.get(version.id); anchor = stored?.anchor || null; memory = stored?.memory || null;
                 try { checkAnchor(); } catch { anchor = null; memory = null; }
                 currentVersionId = version.id; state.stage = 'review'; cacheDraft(); refreshPromptPreview();
@@ -815,6 +846,41 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
                     state.preset = readPlanningPreset(next.preset).preset; state.preset.name = next.name; state.activePresetId = next.id; clearDeletionUndo();
                 }
                 persist(); status('规划预设已删除。'); return { id: entry.id };
+            }
+            if (type === 'createPromptGroup') {
+                if (payload.presetId !== state.activePresetId) throw new Error('当前预设已变化，请重新选择分组范围。');
+                const name = groupName(payload.name);
+                const orderedIds = state.preset.order.map(entry => entry.identifier);
+                const listed = new Set(orderedIds);
+                const ids = [...orderedIds, ...state.preset.prompts.filter(prompt => !listed.has(prompt.identifier)).map(prompt => prompt.identifier)];
+                const start = ids.indexOf(payload.startId), end = ids.indexOf(payload.endId);
+                if (start < 0 || end < 0) throw new Error('所选条目已不存在，请重新选择分组范围。');
+                const selectedIds = ids.slice(Math.min(start, end), Math.max(start, end) + 1);
+                const id = newId('group');
+                keepGroupMembersDisabled(new Set(selectedIds));
+                state.preset.groups.push({ id, name, enabled: true, collapsed: false, order: Math.max(-1, ...state.preset.groups.map(group => group.order)) + 1 });
+                for (const promptId of selectedIds) setPromptGroup(promptId, id);
+                persist(); status(`已创建“${name}”，包含 ${selectedIds.length} 个条目。`); return { id, count: selectedIds.length };
+            }
+            if (type === 'renamePromptGroup') {
+                const id = promptGroup(payload.id);
+                if (!id) throw new Error('请选择需要改名的分组。');
+                const name = groupName(payload.name);
+                state.preset.groups.find(group => group.id === id).name = name;
+                persist(); status('分组名称已保存。'); return { id };
+            }
+            if (type === 'dissolvePromptGroup') {
+                const id = promptGroup(payload.id);
+                if (!id) throw new Error('请选择需要解散的分组。');
+                const selectedIds = Object.keys(state.preset.promptGroups).filter(promptId => state.preset.promptGroups[promptId] === id);
+                keepGroupMembersDisabled(new Set(selectedIds));
+                for (const promptId of selectedIds) setPromptGroup(promptId, null);
+                if (undoDeletionRecord?.groupId === id) {
+                    if (state.preset.groups.find(group => group.id === id)?.enabled === false && undoDeletionRecord.orderEntry) undoDeletionRecord.orderEntry.enabled = false;
+                    undoDeletionRecord.groupId = null;
+                }
+                state.preset.groups = state.preset.groups.filter(group => group.id !== id);
+                persist(); status('分组已解散，条目已保留在未分组中。'); return { id, count: selectedIds.length };
             }
             if (type === 'groupToggle') { const g = state.preset.groups.find(x => x.id === payload.id); if (g) g.enabled = payload.enabled; persist(); render(); return; }
             if (type === 'promptToggle') {
@@ -915,8 +981,25 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
                     if (!group) { group = { id: 'workshop_protocol', name: '规划交付格式', enabled: true, collapsed: false, order: imported.groups.length }; imported.groups.push(group); }
                     imported.promptGroups[protocol.identifier] = group.id;
                 }
-                imported.warnings.push('已保留原预设条目。请关闭原来的正文输出、状态栏等冲突模块，并将正文字数配置为两阶段共享目标。');
-                const result = addPreset(imported); status('已作为新方案导入；请检查启用项和输出要求。'); return result;
+                if (!preserveSelection) {
+                    imported.importAdvice = analyzeImportedPreset(imported);
+                    for (const item of imported.importAdvice.disable) {
+                        const entry = imported.order.find(entry => entry.identifier === item.id);
+                        if (entry) entry.enabled = false;
+                    }
+                }
+                const count = preserveSelection ? 0 : imported.importAdvice.disable.length;
+                const result = addPreset(imported);
+                status(count ? `已导入副本，自动关闭 ${count} 个独立输出条目；可在导入检查中查看并恢复。` : '已导入副本，保留原开关；可在导入检查中查看提示。');
+                return { ...result, autoDisabledCount: count };
+            }
+            if (type === 'restoreImportDisabled') {
+                let count = 0;
+                for (const item of state.preset.importAdvice?.disable || []) {
+                    const entry = state.preset.order.find(entry => entry.identifier === item.id);
+                    if (entry?.enabled === false && state.preset.prompts.some(prompt => prompt.identifier === item.id)) { entry.enabled = true; count++; }
+                }
+                persist(); status(`已恢复 ${count} 个导入时自动关闭的条目，请按需要检查输出要求。`); return { count };
             }
             if (type === 'exportPreset') { download(JSON.stringify(writePlanningPreset(state.preset), null, 2), `${state.preset.name}.json`, 'application/json'); return; }
             if (type === 'cancel') { cancel(); return; }
@@ -945,7 +1028,9 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             }
             if (type === 'applyPlanEdit') {
                 if (state.busy && !state.awaitingReview) throw new Error('请先完成当前操作再修改大纲。');
-                state.plan = parseContent(payload.xml); state.rawPlan = state.plan.xml; diagnosisAnchor = null;
+                const edited = parseContent(payload.xml);
+                if (state.planningAnalysis && edited.xml !== state.plan?.xml) state.planningAnalysis.edited = true;
+                state.plan = edited; state.rawPlan = state.plan.xml; diagnosisAnchor = null;
                 recordVersion('手动修改'); refreshPromptPreview(); status('大纲修改已校验并应用。'); return;
             }
             if (type === 'confirmAndWrite') { await confirmAndWrite(); return; }
@@ -1024,6 +1109,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     return {
         state, onAction, intercept, canRewrite,
         attachQuickActions() { quickActions?.destroy(); quickActions = createWriterQuickActions({ getContext, onRewrite: () => onAction('rerollWriter'), canRewrite }); quickActions.refresh(); },
+        attachEntryPoints() { entryPoints?.destroy(); entryPoints = createWorkbenchEntryPoints({ onOpen: () => this.open() }); },
         startUpdates() { updater.start(); },
         async open() {
             if (!state.busy && !state.plan) state.input = draft() || (getContext().chat?.at(-1)?.is_user ? getContext().chat.at(-1).mes : '');
@@ -1031,7 +1117,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             if (!state.busy && !state.apiBusy && !state.animaChecking) await detectAnima();
             if (!state.busy && !state.apiBusy && !state.animaChecking && typeof getContext().getWorldInfoNames === 'function') refreshHostCatalog();
         },
-        destroy() { destroyed = true; quickActions?.destroy(); writerReceipt = null; updater.destroy(); cancel(); for (const [event, fn] of listeners) ctx.eventSource.removeListener(event, fn); view.destroy(); state.apiKey = ''; secretCache.clear(); },
+        destroy() { destroyed = true; quickActions?.destroy(); entryPoints?.destroy(); writerReceipt = null; state.planningAnalysis = null; updater.destroy(); cancel(); for (const [event, fn] of listeners) ctx.eventSource.removeListener(event, fn); view.destroy(); state.apiKey = ''; secretCache.clear(); },
     };
 }
 
@@ -1092,8 +1178,7 @@ export async function boot() {
         button.addEventListener('click', () => plugin.open());
         const container = document.querySelector('#extensions_settings2') || document.querySelector('#extensions_settings');
         if (container) container.append(button);
-        const actionMenu = document.querySelector('#extensionsMenu');
-        if (actionMenu) { const quick = document.createElement('div'); quick.className = 'list-group-item flex-container flexGap5'; quick.setAttribute('role','button'); quick.tabIndex = 0; quick.append(menuIcon(), document.createTextNode('Vespera')); quick.addEventListener('click', () => plugin.open()); quick.addEventListener('keydown', e => { if(e.key === 'Enter' || e.key === ' ') { e.preventDefault(); plugin.open(); } }); actionMenu.append(quick); }
+        plugin.attachEntryPoints();
         plugin.attachQuickActions();
         plugin.startUpdates();
         return plugin;
