@@ -922,6 +922,125 @@ test('input and preset changes invalidate an already generated outline', async t
     assert.equal(ctx.extensionPrompts[INJECTION_KEY], undefined);
 });
 
+test('changing execution mode or automatic planning preserves a finished outline', async t => {
+    for (const [mode, autoOnSend, patch] of [
+        ['review', false, { mode: 'auto' }], ['manual', false, { mode: 'review' }],
+        ['manual', false, { mode: 'auto' }], ['review', false, { autoOnSend: true }],
+        ['review', true, { autoOnSend: false }],
+    ]) {
+        await t.test(`${mode}/${autoOnSend} to ${JSON.stringify(patch)}`, async subtest => {
+            const f = await fixture(subtest, { settings: { mode, autoOnSend } });
+            await f.plugin.onAction('generate', { input: f.input.value });
+            const outline = f.plugin.state.plan.xml;
+            await f.plugin.onAction('saveSettings', { settings: patch });
+            assert.equal(f.calls.writer.length, 0, 'Saving a mode must not generate automatically');
+            await f.plugin.onAction('confirmAndWrite');
+            assert.equal(f.calls.planner.length, 1);
+            assert.equal(f.calls.recalled, 1);
+            assert.equal(f.calls.writer.length, 1);
+            assert.ok(f.calls.writer[0].prompt.includes(outline));
+            assert.equal(f.ctx.chat.filter(message => message.is_user).length, 1);
+        });
+    }
+});
+
+test('failed main requests can retry the submitted input without replanning or duplicate messages', async t => {
+    for (const restored of [false, true]) for (const end of ['ended', 'stopped', 'throws without end event']) {
+        await t.test(`${restored ? 'restored' : 'live'} / ${end}`, async subtest => {
+            const f = await fixture(subtest);
+            const input = f.input.value;
+            await f.plugin.onAction('generate', { input });
+            if (restored) await f.reload();
+            const generate = f.ctx.generate;
+            let attempts = 0;
+            f.ctx.generate = async type => {
+                attempts++;
+                await f.events.emit('GENERATION_STARTED', type, {}, false);
+                if (f.input.value) {
+                    f.ctx.chat.push({ name: f.ctx.name1, is_user: true, mes: f.input.value });
+                    f.input.value = '';
+                }
+                let aborted = false;
+                await f.plugin.intercept(f.ctx.chat, 32000, () => { aborted = true; }, type);
+                assert.equal(aborted, false);
+                assert.ok(f.ctx.extensionPrompts[INJECTION_KEY]);
+                if (end === 'ended') await f.events.emit('GENERATION_ENDED');
+                if (end === 'stopped') await f.events.emit('GENERATION_STOPPED');
+                if (end !== 'stopped') throw new Error('Main API unavailable');
+            };
+            await f.plugin.onAction('confirmAndWrite');
+            assert.equal(attempts, 1);
+            assert.equal(f.plugin.state.busy, false);
+            assert.equal(f.ctx.extensionPrompts[INJECTION_KEY], undefined);
+            f.ctx.generate = generate;
+            await f.plugin.onAction('saveSettings', { settings: { mode: 'auto', autoOnSend: true } });
+            await f.plugin.onAction('confirmAndWrite');
+            assert.equal(f.calls.writer.length, 1, f.plugin.state.status);
+            assert.equal(f.calls.planner.length, 1);
+            assert.equal(f.calls.recalled, 1);
+            assert.equal(f.ctx.chat.filter(message => message.is_user && message.mes === input).length, 1);
+            assert.equal(f.ctx.extensionPrompts[INJECTION_KEY], undefined);
+            assert.equal(await f.plugin.onAction('confirmAndWrite'), false, 'An answered turn must not be sent again');
+            assert.equal(f.calls.writer.length, 1);
+        });
+    }
+});
+
+test('repeated main failures preserve the plugin-owned composer changes for retry', async t => {
+    for (const submitted of [false, true]) await t.test(submitted ? 'submitted input remains in composer' : 'input originated in the panel', async subtest => {
+        const f = await fixture(subtest);
+        const input = f.input.value;
+        f.input.value = '';
+        await f.plugin.onAction('generate', { input });
+        if (submitted) {
+            f.ctx.chat.push({ name: f.ctx.name1, is_user: true, mes: input });
+            f.input.value = input;
+        }
+        const generate = f.ctx.generate;
+        let attempts = 0;
+        f.ctx.generate = async () => { attempts++; throw new Error('Main API unavailable before submission'); };
+        await f.plugin.onAction('confirmAndWrite');
+        await f.plugin.onAction('confirmAndWrite');
+        assert.equal(attempts, 2, f.plugin.state.status);
+        assert.equal(f.input.value, submitted ? '' : input);
+        f.ctx.generate = generate;
+        await f.plugin.onAction('confirmAndWrite');
+        assert.equal(f.calls.writer.length, 1, f.plugin.state.status);
+        assert.equal(f.calls.planner.length, 1);
+        assert.equal(f.calls.recalled, 1);
+        assert.equal(f.ctx.chat.filter(message => message.is_user && message.mes === input).length, 1);
+    });
+});
+
+test('recognizing a submitted input still rejects actual context changes with a specific reason', async t => {
+    const changes = [
+        ['new composer', f => { f.input.value = '新的未发送输入'; }, 'DRAFT_COMPOSER_CHANGED'],
+        ['panel input', f => f.plugin.onAction('input', { value: '新的本轮输入' }), 'DRAFT_INPUT_CHANGED'],
+        ['prior history', f => { f.ctx.chat[0].mes = '前文已修改'; }, 'DRAFT_CONTEXT_CHANGED'],
+        ['character', f => { f.ctx.characters[0].description = '新人设'; }, 'DRAFT_CONTEXT_CHANGED'],
+        ['different user input', f => { f.ctx.chat.at(-1).mes = '别的用户输入'; }, 'DRAFT_CONTEXT_CHANGED'],
+        ['already answered', f => { f.ctx.chat.push({ is_user: false, mes: '已有正文' }); }, 'DRAFT_CONTEXT_CHANGED'],
+        ['later identical input', f => { f.ctx.chat.push({ is_user: false, mes: '上一轮正文' }, { name: f.ctx.name1, is_user: true, mes: f.plugin.state.input }); }, 'DRAFT_CONTEXT_CHANGED'],
+        ['worldbook', f => f.events.emit('WORLDINFO_UPDATED', 'book'), 'DRAFT_WORLDBOOK_CHANGED'],
+        ['Anima settings', f => { f.ctx.extensionSettings.anima_memory_system = { rag: { imp_life: 7 } }; }, 'DRAFT_ANIMA_CHANGED'],
+        ['prose target', f => f.plugin.onAction('saveSettings', { settings: { storyPace: 'fast' } }), 'DRAFT_CONFIG_CHANGED'],
+        ['planning preset', f => f.plugin.onAction('promptToggle', { identifier: 'outline_light_user', enabled: false }), 'DRAFT_CONFIG_CHANGED'],
+    ];
+    for (const [name, change, code] of changes) await t.test(name, async subtest => {
+        const f = await fixture(subtest);
+        await f.plugin.onAction('generate', { input: f.input.value });
+        f.ctx.chat.push({ name: f.ctx.name1, is_user: true, mes: f.input.value }); f.input.value = '';
+        await change(f);
+        const chat = structuredClone(f.ctx.chat), composer = f.input.value;
+        assert.equal(await f.plugin.onAction('confirmAndWrite'), false);
+        assert.equal(f.calls.writer.length, 0);
+        assert.equal(f.calls.planner.length, 1);
+        assert.deepEqual(f.ctx.chat, chat);
+        assert.equal(f.input.value, composer);
+        assert.equal(f.plugin.state.logs.at(-1).details.code, code);
+    });
+});
+
 test('a refreshed draft expands the pending input through the current main model without replanning', async t => {
     for (const submitted of [false, true]) {
         await t.test(submitted ? 'input already in chat' : 'unsent input', async subtest => {
