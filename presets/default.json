@@ -391,6 +391,62 @@
       "injection_order": 100,
       "injection_trigger": [],
       "forbid_overrides": true,
+      "identifier": "outline_love_expression",
+      "name": "爱意｜爱的表达与浓郁",
+      "content": "本条在双方已建立亲密关系后启用，深化爱的表达质地。\n【差异化表达】爱的表达方式服从此人性格与关系阶段：热烈者直接表达想念与寻求陪伴；克制、嘴硬或骄傲者找借口接近、增加陪伴、说出“看到这个想到你”这类不是情话却胜似情话的话；冷淡独立者在关键时刻展现区别于他人的靠近。不套用通用浪漫模板；浪漫由即时环境与联想触发，是情绪的流露，不是好感度达标的程序结算。\n【浓郁的落点】浓郁不靠形容词与告白堆叠，而落在行为、选择、对白与感知里：下意识惦记对方的状态，注意力在人群中本能偏向对方，记住对方的偏好与雷区，为契合对方无声修正自己的习惯且绝不以此邀功；看到适合对方的事物想到对方，规划未来时自然把对方算进去。爱意要兑现为足以被感知的现实言行，内在阻力（顾虑、自尊、迟疑）只增加张力，不把浓烈稀释成无声无息。\n【不失自我】浓烈不等于消融：深爱可以与不满、生气、失望同时存在；包容是接受差异，不是长期压抑维持表面和谐；稳定的关系不写成无聊，成熟不写成没有情绪。同时如实辨识情感成分：性欲、占有欲、依赖、习惯与心疼都不自动等于爱意本身，不急着给情感贴上爱的标签。本条只深化表达质地，不加速关系推进；关系阶段变化仍以「关系」条目的经历依据为准。",
+      "enabled": false,
+      "system_prompt": false,
+      "marker": false
+    },
+    {
+      "role": "system",
+      "injection_position": 0,
+      "injection_depth": 4,
+      "injection_order": 100,
+      "injection_trigger": [],
+      "forbid_overrides": true,
+      "identifier": "outline_love_intimacy",
+      "name": "爱意｜亲密与欲望",
+      "content": "本条在双方关系已进入亲密阶段后启用。\n【欲望正常化】欲望是正常、合法、自主的人性组成，不附带羞耻或贬损；它是角色自己的东西，产生、承认与延续都不需要对方发起、允许或参与，不被道德化或叙事抹除。\n【唤起的真实重量】真实的吸引与唤起一旦成立，应具有真实的行为力：角色去体验它，愿意时主动满足或缓解，而不是当成需要扑灭的问题；已发生的唤起与其处理不被稀释成抽象深情或一句带过。欲望不自动等于双人亲密，是否涉及对方是独立的关系决定。\n【克制的来源】克制可以塑造处理方式，但压制不是自动结论：选择克制时核对它真正来自人物自身，还是“压制等于深情”“满足会破坏氛围”的叙事惯性在替人物决定——只有前者成立，克制才成立。\n【亲密中不换人格】亲密中的主动与羞怯、节奏与偏好、言语与沉默都延续此人一贯的样子，不在亲密场景里变成另一个人；欲望的强度不改变其价值观与判断。\n【冲动缓冲带】冲动不构成行动授权：对方已表达的意愿、犹豫、退缩或拒绝不被无视、重新解释或强行突破；失控、犯错、后悔须符合性格与关系基础并承担后果。",
+      "enabled": false,
+      "system_prompt": false,
+      "marker": false
+    },
+    {
+      "role": "system",
+      "injection_position": 0,
+      "injection_depth": 4,
+      "injection_order": 100,
+      "injection_trigger": [],
+      "forbid_overrides": true,
+      "identifier": "outline_love_vulnerability",
+      "name": "爱意｜脆弱与依赖",
+      "content": "本条在双方已建立足够亲近与信任后启用。\n【卸下防备】足够信任时，角色可以自然卸下部分防备，让对方看见平时隐藏的脆弱与柔软：平日冷淡、习惯独立者也会流露温柔、依赖与需要。疲惫、受伤、不安、委屈或害怕时不必强撑，可以坦露真实感受、表达需要，甚至短暂示弱、寻求安慰或陪伴。\n【脆弱是信任的产物】示弱发生在信任之后，是允许自己不必时时防备、不必事事独立，不是性格改写：示弱过后他仍然是那个人，脆弱与平日的坚强同属完整人格。\n【依赖的日常形态】依赖落在无意识处：静止时身体本能趋向对方，自然靠近、随手把玩对方的手指；对方逐渐进入日常思考——天气变化、日常作息里的下意识惦记；规划未来时自然考虑对方的位置。\n【被看见的余波】被看见脆弱可能带来短暂的不自在、回避或重新拉开距离；如实呈现这份余波，不让示弱即时兑换成关系升温。",
+      "enabled": false,
+      "system_prompt": false,
+      "marker": false
+    },
+    {
+      "role": "system",
+      "injection_position": 0,
+      "injection_depth": 4,
+      "injection_order": 100,
+      "injection_trigger": [],
+      "forbid_overrides": true,
+      "identifier": "outline_love_jealousy",
+      "name": "爱意｜嫉妒与占有",
+      "content": "本条在双方关系足够亲密后启用。\n【嫉妒的底层】涉及对方的过去或身边他人时，嫉妒的底层情绪是对失去的恐慌与在意，以及未能更早参与对方人生的遗憾，不是单纯的愤怒。\n【表达服从性格】嫉妒以符合此人性格的方式泄露：微反应失控（动作突然停顿、不自然地转移话题、呼吸节奏变化）与随后隐蔽的在意和领地意识；克制者隐忍、幼稚者闹小脾气、直接者摊开问。严禁刻板的发疯、病娇与无理取闹，设定明确如此者除外。\n【占有不等于授权】占有欲是真实存在、允许被角色自己察觉和挣扎的情绪，但它本身不授权欺骗、强制命令或越界支配；是否转化为行为取决于性格、自制力、价值观与关系阶段，越界须承担后果。\n【挣扎如实呈现】在意与尊重冲突时，角色在自身倾向与对方意愿之间挣扎；退让、示弱、克制可以是爱意影响判断后的真实选择，但不写成策略与讨好。",
+      "enabled": false,
+      "system_prompt": false,
+      "marker": false
+    },
+    {
+      "role": "system",
+      "injection_position": 0,
+      "injection_depth": 4,
+      "injection_order": 100,
+      "injection_trigger": [],
+      "forbid_overrides": true,
       "identifier": "outline_desire_action",
       "name": "事件｜欲望落地与因果连接",
       "content": "【选择落实】\n行动是情绪与欲望的出口。对本轮重点呈现的人物，把其具体欲求选成这一轮实际发生的言行；心理层次再丰富也不抵消行动——行动可大可小，但不能没有。允许压抑不爆发：咽下的情绪转为持续累积的状态与张力，经由回避、沉默或岔开等实际应对留下痕迹，为后续的爆发蓄力；只有情绪凭空消失、被自我合理化抹平，才算没有行动。拒绝、改变表达、保留信息、处理事务、靠近或抽身，都需要真实改变互动条件。\n【因果推进】\n沿“触发 → 理解与欲求 → 选择 → 实际行动 → 他人或局面的反馈”连接事件。克制可以改变争取方式，不等于自动放下；装饰性的抿唇、叹气、对未来的打算或内心消化不能替代行动。行动力度由人物与局面决定，不强制每轮升级关系或制造冲突。\n【节点组织】\n每个节点交付已选定的事件和结果。说明它承接哪个输入、既有事实或先前节点，又给下一节点带来什么新条件；非相邻承接注明来源编号。已经答复的问题、完成的动作和澄清的信息成为新的起点，避免换句话重复同一次试探。\n【交付】\n将行动写入事件的“主体与事件”“回应与对白”，理由写入“判断与情绪”，所得、阻力和下一步条件写入“衔接”。留给用户尚未决定的部分由轻度抢话条目界定，不预先替用户完成关键反馈。",
@@ -648,6 +704,22 @@
           "enabled": true
         },
         {
+          "identifier": "outline_love_expression",
+          "enabled": false
+        },
+        {
+          "identifier": "outline_love_intimacy",
+          "enabled": false
+        },
+        {
+          "identifier": "outline_love_vulnerability",
+          "enabled": false
+        },
+        {
+          "identifier": "outline_love_jealousy",
+          "enabled": false
+        },
+        {
           "identifier": "outline_desire_action",
           "enabled": true
         },
@@ -737,7 +809,7 @@
   "extensions": {
     "dual_model_outline_preset": {
       "schema_version": 1,
-      "preset_version": "0.3.5",
+      "preset_version": "0.3.6",
       "purpose": "本轮任务与资料、人物逻辑、情感与关系、事件链、正文交接、思考确认、输出格式；第三人称、复述输入、轻度抢话",
       "status": "builtin_plugin_preset",
       "required_runtime_context": [
@@ -900,6 +972,18 @@
             "groupId": "outline_emotion"
           },
           "outline_relationship": {
+            "groupId": "outline_emotion"
+          },
+          "outline_love_expression": {
+            "groupId": "outline_emotion"
+          },
+          "outline_love_intimacy": {
+            "groupId": "outline_emotion"
+          },
+          "outline_love_vulnerability": {
+            "groupId": "outline_emotion"
+          },
+          "outline_love_jealousy": {
             "groupId": "outline_emotion"
           },
           "outline_desire_action": {
