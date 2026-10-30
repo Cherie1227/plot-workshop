@@ -470,7 +470,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             state.stage = 'planning'; status('正在诊断本轮剧情…');
             log('info', 'diagnosis.started', '用户主动请求剧情诊断。');
             const result = await (api.requestDiagnosis || requestDiagnosis)({ getContext, fetchImpl, baseUrl: state.settings.baseUrl,
-                model: state.settings.model, stream: state.settings.stream, apiKey: state.apiKey, messages, signal, timeoutMs: 180000 });
+                model: state.settings.model, stream: state.settings.stream, apiKey: state.apiKey, messages, signal, timeoutMs: 600000 });
             if (signal.aborted || !snapshotCurrent(expected)) throw new Error('诊断期间输入或上下文已变化，请重新诊断。');
             state.diagnosis = result; diagnosisAnchor = { snapshot: expected, xml: state.plan?.xml || '' };
             log('success', 'diagnosis.completed', '剧情诊断已完成，等待用户选择。');
@@ -629,7 +629,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         state.stage = 'planning'; planningStatus('规划模型正在生成本轮大纲…');
         log('info', 'planner.request.started', '开始请求本轮大纲。', { model: state.settings.model, messageCount: compiled.messages.length });
         const result = await requestPlan({ baseUrl: state.settings.baseUrl, model: state.settings.model, apiKey: state.apiKey,
-            messages: compiled.messages, signal, timeoutMs: 180000, stream: state.settings.stream,
+            messages: compiled.messages, signal, timeoutMs: 600000, stream: state.settings.stream,
             ...(state.settings.temperature !== '' ? { temperature: Number(state.settings.temperature) } : {}),
             ...(state.settings.maxTokens !== '' ? { maxTokens: Number(state.settings.maxTokens) } : {}),
             transport: createSTTransport(getContext, fetchImpl), DOMParser: globalThis.DOMParser });
