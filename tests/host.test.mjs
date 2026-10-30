@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { INJECTION_KEY, DEFAULT_SETTINGS, cleanSettings, describeInjection, proseTarget, assertChat, storySnapshot, collectPlanningContext, createSTTransport, inertHostText, injectForTurn, clearInjection } from '../lib/host.js';
 
 function context() {
@@ -142,6 +143,27 @@ test('temporary injection excludes WI scanning, passes a validity filter and nev
     assert.equal(ctx.extensionPrompts.other.value, 'keep');
     clearInjection(ctx);
     assert.equal(JSON.stringify(ctx.chat), before);
+});
+
+test('writer handoff follows the outline and keeps target, memory and legacy drafts intact', () => {
+    const writerRules = fs.readFileSync(new URL('../presets/writer.txt', import.meta.url), 'utf8');
+    for (const xml of [
+        '<content><plot>世界背景：旧城。\n本轮方向：递信。</plot><characters>不涉及</characters><segments><segment index="1">递信。</segment></segments><end_state>本轮状态：信已交出。\n必须遵守：信封保持封闭。</end_state></content>',
+        '<content><plot>递信。</plot><characters>不涉及</characters><segments><segment index="1">递信。</segment></segments><end_state>信已交出。</end_state></content>',
+    ]) {
+        const ctx = context();
+        const before = JSON.stringify(ctx.chat);
+        const memory = '旧信的封口图案：{{getvar::seal}}';
+        const target = '1500—2000字';
+        injectForTurn(ctx, { xml, memory, target, writerRules });
+        const text = ctx.extensionPrompts[INJECTION_KEY].value;
+        for (const value of [xml, memory, target, writerRules]) assert.equal(text.split(inertHostText(value)).length - 1, 1);
+        assert.ok(text.indexOf(inertHostText(memory)) < text.indexOf(xml));
+        assert.ok(text.indexOf('【正文执行规则】') > text.indexOf('</content>'));
+        assert.ok(text.endsWith(inertHostText(writerRules)));
+        assert.ok(!text.includes('{{'));
+        assert.equal(JSON.stringify(ctx.chat), before);
+    }
 });
 
 test('injection options map to the official ST enums while preserving scan isolation and filter', () => {

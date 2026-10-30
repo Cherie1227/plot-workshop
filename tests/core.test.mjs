@@ -195,3 +195,21 @@ test('bundled preset compiles without enabled placeholders and preserves final o
     }
     assert.ok(result.messages.some(x => x.content.includes('本轮共享的最终正文目标')));
 });
+
+test('bundled world background and closing constraints round-trip within the existing four-block format', () => {
+    const p = normalizePreset(fs.readFileSync(new URL('../presets/default.json', import.meta.url), 'utf8'));
+    const context = { ...baseContext, worldInfoBefore: '旧城沿用驿站传信。', personaDescription: '苏青寡言。', charDescription: '林澄重视约定。', charPersonality: '', scenario: '门口。', worldInfoAfter: '', dialogueExamples: '', chatHistory: [] };
+    const { messages } = compilePreset(p, { context });
+    const output = messages.at(-1).content;
+    const template = output.match(/【固定模板开始】\s*([\s\S]*?)\s*【固定模板结束】/)[1];
+    const plan = parseContent(template);
+    assert.ok(plan.plot.startsWith('世界背景：'));
+    assert.ok(plan.plot.indexOf('本轮方向：') > plan.plot.indexOf('世界背景：'));
+    assert.ok(plan.endState.startsWith('本轮状态：'));
+    assert.ok(plan.endState.indexOf('必须遵守：') > plan.endState.indexOf('本轮状态：'));
+    assert.equal(plan.characters.length, 1);
+    assert.equal(plan.segments.length, 1);
+    assert.deepEqual(parseContent(plan.xml), plan);
+    // Older saved drafts do not need the new plain-text labels to remain readable.
+    assert.equal(parseContent(validXml).plot, '接过信，仍保留戒备。');
+});
