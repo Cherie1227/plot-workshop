@@ -328,7 +328,7 @@ export function createWorkbench({ getState, onAction }) {
     const importReviewItems = el('div', 'pw-import-review-items');
     const importReviewHelp = el('details', 'pw-import-review-help');
     importReviewHelp.append(el('summary', '', '格式与依赖说明'),
-        el('p', 'pw-hint', '固定结构：content → plot / characters / segments / end_state。保留标签与层级，故事内容可修改。'),
+        el('p', 'pw-hint', '当前结构：content → direction / beats / anchors / end_state；兼容旧版 plot / characters / segments。保留标签与层级，故事内容可修改。'),
         el('p', 'pw-hint', '变量和角色宏本身不算冲突；定义需先于引用。上下文占位由酒馆提供，本轮输入和 Anima 记忆自动加入。'));
     importReviewDetails.append(importReviewToolbar, importReviewMessage, importAdjustment, importReviewItems, importReviewHelp);
     const presetUnsaved = el('div', 'pw-editor-notice'); presetUnsaved.hidden = true;
@@ -1707,17 +1707,22 @@ export function createWorkbench({ getState, onAction }) {
                     planReading.append(section);
                 }
                 block('本轮剧情', plan.plot);
-                const characters = el('details', 'pw-character-details');
-                characters.open = !mobile.matches;
-                characters.append(el('summary', '', '人物情感与回应'));
-                for (const character of plan.characters || []) {
-                    const person = el('section', 'pw-person');
-                    person.append(el('h5', '', character.name), el('p', '', character.emotion), el('p', '', character.response));
-                    characters.append(person);
+                if (plan.version === 2) {
+                    for (const [index, beat] of (plan.beats || []).entries()) block(`双弧节拍 ${beat.index || index + 1}`, beat.text, 'pw-segment');
+                    block('锁定锚点', plan.anchors, 'pw-anchors');
+                } else {
+                    const characters = el('details', 'pw-character-details');
+                    characters.open = !mobile.matches;
+                    characters.append(el('summary', '', '人物情感与回应'));
+                    for (const character of plan.characters || []) {
+                        const person = el('section', 'pw-person');
+                        person.append(el('h5', '', character.name), el('p', '', character.emotion), el('p', '', character.response));
+                        characters.append(person);
+                    }
+                    if (!(plan.characters || []).length) characters.append(el('p', '', '不涉及'));
+                    planReading.append(characters);
+                    for (const [index, segment] of (plan.segments || []).entries()) block(`事件 ${segment.index || index + 1}`, typeof segment === 'string' ? segment : segment.text || segment.content, 'pw-segment');
                 }
-                if (!(plan.characters || []).length) characters.append(el('p', '', '不涉及'));
-                planReading.append(characters);
-                for (const [index, segment] of (plan.segments || []).entries()) block(`事件 ${segment.index || index + 1}`, typeof segment === 'string' ? segment : segment.text || segment.content, 'pw-segment');
                 block('本轮结束状态', plan.endState || plan.end_state, 'pw-end-state');
             }
         }

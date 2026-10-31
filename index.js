@@ -786,7 +786,8 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             check();
             if (purified) {
                 if (validatePolish(plan, purified)) {
-                    plan = { xml: purified.xml, plot: purified.plot, characters: purified.characters, segments: purified.segments, endState: purified.endState };
+                    const { raw: purifiedRaw, analysis: purifiedAnalysis, ...purifiedPlan } = purified;
+                    plan = purifiedPlan;
                     polished = true;
                     log('success', 'polish.completed', '大纲语言已净化，结构与交接标记校验一致。');
                     state.polishCompare = { original: polishSource, purified: purified.xml, adopted: true, reason: '' };

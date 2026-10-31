@@ -214,33 +214,62 @@ test('timeout and abort stop waiting even when a custom transport ignores its si
     await assert.rejects(pending, { code: 'ABORTED' });
 });
 
-test('bundled preset compiles without enabled placeholders and preserves final output protocol', () => {
+test('bundled preset compiles without enabled placeholders and preserves the content-v2 protocol', () => {
     const file = new URL('../presets/default.json', import.meta.url);
     const p = normalizePreset(fs.readFileSync(file, 'utf8'));
     const context = { ...baseContext, worldInfoBefore: '', personaDescription: '苏青寡言。', charDescription: '林澄重视约定。', charPersonality: '', scenario: '门口。', worldInfoAfter: '', dialogueExamples: '', chatHistory: [] };
     const result = compilePreset(p, { context, targetLength: '1500—2000 字' });
     assert.ok(!JSON.stringify(result.messages).includes('〔自行填写或删除〕'));
-    for (const tag of ['content', 'plot', 'characters', 'segments', 'end_state']) {
-        assert.ok(result.messages.at(-1).content.includes(`<${tag}>`));
+    for (const tag of ['content', 'direction', 'beats', 'beat', 'event', 'emotion', 'choice', 'anchors', 'end_state']) {
+        assert.ok(result.messages.at(-1).content.includes(`<${tag}`));
         assert.ok(result.messages.at(-1).content.includes(`</${tag}>`));
     }
+    assert.match(result.messages.at(-1).content, /首轮、新场景或资料已经建立多人关系网/);
     assert.ok(result.messages.some(x => x.content.includes('本轮共享的最终正文目标')));
 });
 
-test('bundled world background and closing constraints round-trip within the existing four-block format', () => {
+test('bundled content-v2 template round-trips and legacy drafts remain readable', () => {
     const p = normalizePreset(fs.readFileSync(new URL('../presets/default.json', import.meta.url), 'utf8'));
     const context = { ...baseContext, worldInfoBefore: '旧城沿用驿站传信。', personaDescription: '苏青寡言。', charDescription: '林澄重视约定。', charPersonality: '', scenario: '门口。', worldInfoAfter: '', dialogueExamples: '', chatHistory: [] };
     const { messages } = compilePreset(p, { context });
-    const output = messages.at(-1).content;
-    const template = output.match(/【固定模板开始】\s*([\s\S]*?)\s*【固定模板结束】/)[1];
+    const template = messages.at(-1).content.match(/【固定模板开始】\s*([\s\S]*?)\s*【固定模板结束】/)[1];
     const plan = parseContent(template);
-    assert.ok(plan.plot.startsWith('世界背景：'));
-    assert.ok(plan.plot.indexOf('本轮方向：') > plan.plot.indexOf('世界背景：'));
-    assert.ok(plan.endState.startsWith('本轮状态：'));
+    assert.equal(plan.version, 2);
+    assert.equal(plan.contract, 'content-v2.0');
+    assert.equal(plan.plot, plan.direction);
+    assert.equal(plan.beats.length, 1);
+    assert.equal(plan.segments, plan.beats);
+    assert.equal(plan.characters.length, 0);
     assert.ok(!plan.endState.includes('必须遵守'));
-    assert.equal(plan.characters.length, 1);
-    assert.equal(plan.segments.length, 1);
     assert.deepEqual(parseContent(plan.xml), plan);
-    // Older saved drafts do not need the new plain-text labels to remain readable.
+    assert.equal(parseContent(validXml).version, 1);
     assert.equal(parseContent(validXml).plot, '接过信，仍保留戒备。');
+});
+
+test('content-v2 allows optional emotion and choice but rejects malformed beat shapes', () => {
+    for (const fields of ['<event>雨继续下。</event>', '<event>店主决定打烊。</event><choice>常客留下帮忙。</choice>']) {
+        const xml = `<content><direction>雨夜各有去处。</direction><beats><beat index="1">${fields}</beat></beats><anchors>无</anchors><end_state>众人开始各自行动。</end_state></content>`;
+        const plan = parseContent(xml);
+        assert.equal(plan.beats.length, 1);
+        assert.equal(parseContent(plan.xml).xml, plan.xml);
+    }
+    const wrap = fields => `<content><direction>方向</direction><beats><beat index="1">${fields}</beat></beats><anchors>无</anchors><end_state>状态</end_state></content>`;
+    assert.throws(() => parseContent(wrap('<emotion>先写情绪。</emotion><event>后写事件。</event>')), /beat/);
+    assert.throws(() => parseContent(wrap('<event>事件。</event><extra>额外字段。</extra>')), /beat/);
+    assert.throws(() => parseContent(wrap('<event></event>')), /event/);
+});
+
+test('same ensemble scene keeps independent cast causality with fewer locked fields in content-v2', () => {
+    const legacy = '<content><plot>世界背景：雨夜便利店。本轮方向：苏青躲雨时，店主林澄、店员唐雨和外卖员许川各自处理事务并发生交汇。</plot><characters><character name="苏青"><emotion>从疲惫转为愿意参与。</emotion><response>留下并主动提出帮忙。</response></character><character name="林澄"><emotion>从忙碌转为抱歉。</emotion><response>先处理延误订单。</response></character><character name="唐雨"><emotion>因录错订单而紧张。</emotion><response>向店主承认错误。</response></character><character name="许川"><emotion>担心超时。</emotion><response>取餐后继续配送。</response></character></characters><segments><segment index="1">主体与事件：复述苏青进店躲雨，唐雨拿着订单来找林澄。判断与情绪：苏青疲惫，唐雨紧张。回应与对白：唐雨承认自己录错订单，林澄安慰并核对。信息变化：林澄得知延误原因。衔接：林澄离开收银台处理订单。</segment><segment index="2">主体与事件：许川进店取延误订单。判断与情绪：许川担心超时，苏青从旁观转为愿意帮忙。回应与对白：苏青主动提出帮忙整理，林澄向许川致歉。信息变化：苏青得知订单延误。衔接：林澄把餐交给许川。</segment><segment index="3">主体与事件：许川继续配送，唐雨重新核对订单。判断与情绪：唐雨仍然内疚。回应与对白：林澄让唐雨继续核对。信息变化：无。衔接：林澄把备用伞递给苏青后转身。</segment></segments><end_state>本轮状态：许川离开，唐雨继续核对，苏青留下帮忙，最后以林澄递伞后转身收尾。</end_state></content>';
+    const v2 = '<content><direction>苏青进店躲雨时，店主林澄、店员唐雨与外卖员许川各自的事务在便利店交汇。</direction><beats><beat index="1"><event>输入已有：苏青进店躲雨。唐雨主动向林澄承认录错订单，林澄必须暂时离开收银台核对。</event><emotion>唐雨从侥幸转为紧张，苏青仍疲惫。</emotion></beat><beat index="2"><event>许川来取延误订单并担心超时，苏青因此看见这家店的实际运转。</event><emotion>苏青从旁观转为愿意参与。</emotion><choice>苏青主动留下帮忙，林澄先向许川交付订单。</choice></beat><beat index="3"><event>许川继续配送，唐雨留下重新核对后续订单。</event></beat></beats><anchors>只有林澄与唐雨知道录错订单的人；许川只知道订单延误。各人对白沿用既有口吻。</anchors><end_state>许川恢复配送，唐雨开始修正错误，苏青留下帮忙；躲雨与店内事务都已进入下一步。</end_state></content>';
+    const oldPlan = parseContent(legacy), newPlan = parseContent(v2);
+    assert.equal(oldPlan.version, 1);
+    assert.equal(newPlan.version, 2);
+    assert.equal(newPlan.beats.length, 3);
+    assert.match(newPlan.beats[0].event, /唐雨主动/);
+    assert.match(newPlan.beats[1].event, /许川/);
+    assert.equal(newPlan.beats[2].emotion, undefined);
+    assert.match(newPlan.anchors, /只有林澄与唐雨知道/);
+    assert.ok(newPlan.xml.length < oldPlan.xml.length);
+    assert.doesNotMatch(newPlan.xml, /回应与对白|判断与情绪|衔接：/);
 });

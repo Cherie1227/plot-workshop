@@ -46,6 +46,8 @@ test('patrol flags a rewritten outline with the same plot and unchanged end stat
     const moved = patrolStory({ chat: [], currentPlan: { plot: '接过信，仍保留戒备。', endState: '信已拆开，约定明晚在码头见面。' }, previousPlanXml });
     assert.ok(!moved.some(text => text.includes('同一件事')));
     assert.deepEqual(patrolStory({ chat: [], currentPlan, previousPlanXml: '不是大纲' }), []);
+    const v2Previous = '<content><direction>接过信，仍保留戒备。</direction><beats><beat index="1"><event>接信。</event></beat></beats><anchors>无</anchors><end_state>信未拆开，等待回应。</end_state></content>';
+    assert.ok(patrolStory({ chat: [], currentPlan, previousPlanXml: v2Previous }).some(text => text.includes('同一件事')));
 });
 
 test('patrol suggests manual tiers only for long chats with every tier disabled', () => {
