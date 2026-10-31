@@ -214,17 +214,22 @@ test('timeout and abort stop waiting even when a custom transport ignores its si
     await assert.rejects(pending, { code: 'ABORTED' });
 });
 
-test('both complete bundled presets compile and retain their own output protocols', () => {
+test('both complete bundled presets retain their protocols and leave presentation to the writer', () => {
     const context = { ...baseContext, worldInfoBefore: '', personaDescription: '苏青寡言。', charDescription: '林澄重视约定。', charPersonality: '', scenario: '门口。', worldInfoAfter: '', dialogueExamples: '', chatHistory: [] };
     const compiled = {};
     for (const [version, filename, contract] of [[1, 'default.json', 'content-v1.2'], [2, 'default-v2.json', 'content-v2.0']]) {
         const raw = JSON.parse(fs.readFileSync(new URL(`../presets/${filename}`, import.meta.url), 'utf8'));
         assert.equal(raw.extensions.dual_model_outline_preset.output_contract, contract);
         const p = normalizePreset(raw);
+        assert.equal(p.prompts.some(item => item.identifier === 'outline_presentation'), false);
+        assert.equal(p.order.some(item => item.identifier === 'outline_presentation'), false);
+        assert.equal('outline_presentation' in p.promptGroups, false);
         const result = compilePreset(p, { context, targetLength: '1500—2000 字' });
         assert.ok(!JSON.stringify(result.messages).includes('〔自行填写或删除〕'));
         compiled[version] = result.messages.map(message => message.content).join('\n');
         assert.ok(result.messages.some(x => x.content.includes('本轮共享的最终正文目标')));
+        assert.doesNotMatch(compiled[version], /【呈现】/);
+        assert.match(compiled[version], /主模型依据这些故事事实与因果重新创作完整正文/);
     }
     for (const tag of ['content', 'plot', 'characters', 'character', 'emotion', 'response', 'segments', 'segment', 'end_state']) {
         assert.ok(compiled[1].includes(`<${tag}`)); assert.ok(compiled[1].includes(`</${tag}>`));
@@ -233,6 +238,7 @@ test('both complete bundled presets compile and retain their own output protocol
     for (const tag of ['content', 'direction', 'beats', 'beat', 'event', 'emotion', 'choice', 'anchors', 'end_state']) {
         assert.ok(compiled[2].includes(`<${tag}`)); assert.ok(compiled[2].includes(`</${tag}>`));
     }
+    assert.doesNotMatch(compiled[2], /特殊格式|规划端独有的最小模板/);
 });
 
 test('both bundled templates round-trip independently', () => {

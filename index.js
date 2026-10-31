@@ -88,8 +88,8 @@ export async function createPlugin({ getContext, builtin, builtinV2 = null, writ
     extensionUrl = base.href, currentVersion = '开发版', rewriteReply, reloadPage = () => globalThis.location?.reload() } = {}) {
     const ctx = getContext();
     const saved = ctx.extensionSettings[STORE] || {};
-    const defaultPreset = normalizePreset(builtin, { name: '第三人称 · 轻度抢话（V1 稳定）' });
-    const experimentalPreset = builtinV2 ? normalizePreset(builtinV2, { name: '第三人称 · 双弧节拍（V2 实验）' }) : null;
+    const defaultPreset = normalizePreset(builtin, { name: '状态因果 · 轻度补写（V1 稳定）' });
+    const experimentalPreset = builtinV2 ? normalizePreset(builtinV2, { name: '状态因果 · 双弧节拍（V2 实验）' }) : null;
     const initialSettings = cleanSettings(saved.settings), initialWarnings = [];
     const apiProfiles = [];
     for (const profile of Array.isArray(saved.apiProfiles) ? saved.apiProfiles : []) {

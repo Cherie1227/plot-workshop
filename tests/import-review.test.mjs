@@ -102,6 +102,11 @@ test('explicit planning handoff is compatible, but adding prose output still nee
     const handoff = '在 plot 简要给出整体视点安排；具体叙述句式和心理描写交给正文主预设。';
     assert.equal(one('视角安排', `{{user}}\n${handoff}`).needsReview, false);
     assert.equal(one('视角安排', `{{user}}\n${handoff}\n请输出完整正文。`).needsReview, true);
+    const creativeHandoff = '在大纲交接故事事实；主模型依据这些故事事实与因果重新创作完整正文，独立决定人称视点、开场、结构与文风。';
+    assert.equal(one('创作分工', `{{user}}\n${creativeHandoff}`).needsReview, false);
+    const boundaryHandoff = '在大纲只交接认知边界；人称、叙述角度与信息揭示手法由主模型依主预设决定。';
+    assert.equal(one('认知边界', `{{user}}\n${boundaryHandoff}`).needsReview, false);
+    assert.equal(one('认知边界', `{{user}}\n${boundaryHandoff}\n请输出完整正文。`).needsReview, true);
 });
 
 test('current built-in planning preset has no import conflicts', async () => {

@@ -72,7 +72,7 @@ test('token estimate handles Unicode and runtime messages; inconsistent or absen
 test('built-in ordering is rules-first with context, input, thinking and output contract last and no variable-order dependencies', () => {
     const source = JSON.parse(fs.readFileSync(new URL('../presets/default.json', import.meta.url), 'utf8'));
     const preset = normalizePreset(source);
-    assert.equal(source.name, '第三人称 · 轻度抢话（V1 稳定）');
+    assert.equal(source.name, '状态因果 · 轻度补写（V1 稳定）');
     assert.ok(preset.prompts.every(item => !/\{\{\s*(?:set|get)(?:global)?var/i.test(item.content)));
     const groups = ['outline_context','outline_task','outline_tiers','outline_tone','outline_character','outline_special','outline_emotion','outline_story','outline_voice','outline_thinking','outline_delivery'];
     assert.deepEqual(preset.groups.map(group => group.id), groups);
@@ -96,6 +96,32 @@ test('built-in ordering is rules-first with context, input, thinking and output 
     assert.equal(compiled.entries.at(-1).id, 'outline_output');
     assert.ok(!compiled.messages.at(-1).content.includes('<knowledge>'));
     assert.ok(!compiled.messages.at(-1).content.includes('<cause>'));
+});
+
+test('both built-ins hand over story facts without prescribing prose implementation', () => {
+    for (const file of ['default.json', 'default-v2.json']) {
+        const source = JSON.parse(fs.readFileSync(new URL(`../presets/${file}`, import.meta.url), 'utf8'));
+        const prompts = new Map(source.prompts.map(item => [item.identifier, item.content]));
+        for (const id of [
+            'outline_light_user', 'outline_third_person', 'outline_ending',
+            'outline_think_drive', 'outline_output', 'outline_userproxy_min',
+            'outline_userproxy_light', 'outline_userproxy_strong', 'outline_userproxy_max',
+        ]) {
+            assert.doesNotMatch(prompts.get(id), /正文以 user_input 的润色转述起始|使用第三人称|整体视点|视点切换|按正文呈现顺序|最后一拍|叙事重心|视点不停留|视点可以/, `${file}:${id}`);
+        }
+        assert.match(prompts.get('main'), /主模型依据这些故事事实与因果重新创作完整正文/);
+        assert.match(prompts.get('outline_output'), /不得规定开场转述、叙述人称与视点/);
+        assert.match(prompts.get('outline_third_person'), /认知边界/);
+        assert.match(prompts.get('outline_light_user'), /影响剧情走向与关系走向的回答与决定/);
+        assert.match(prompts.get('outline_dialogue'), /逐字保留/);
+    }
+    const writer = fs.readFileSync(new URL('../presets/writer.txt', import.meta.url), 'utf8');
+    assert.match(writer, /不是逐字段翻译、复述、扩写或润色大纲/);
+    assert.match(writer, /重新创作一篇连贯、完整的中文正文/);
+    assert.match(writer, /不固定从润色转述开场/);
+    assert.doesNotMatch(writer, /使用第三人称/);
+    assert.match(writer, /【逐字保留】的原句必须准确使用/);
+    assert.match(writer, /大纲未提组件不代表省略、关闭或降级为普通旁述/);
 });
 
 test('built-in head creative permission is optional and preserves the output contract when enabled', () => {

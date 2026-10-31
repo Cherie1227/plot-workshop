@@ -112,13 +112,15 @@ test('temporary injection excludes WI scanning, passes a validity filter and nev
 
 test('writer handoff follows the outline and keeps target, memory and legacy drafts intact', () => {
     const writerRules = fs.readFileSync(new URL('../presets/writer.txt', import.meta.url), 'utf8');
-    assert.match(writerRules, /大纲未写【呈现】或未提组件，不代表省略、关闭或降级为普通旁述/);
+    assert.match(writerRules, /大纲未提组件不代表省略、关闭或降级为普通旁述/);
     assert.match(writerRules, /只要资料要求且本轮触发条件成立，就必须生成相应组件/);
-    assert.match(writerRules, /未写入这些字段的事项默认开放/);
-    assert.match(writerRules, /允许补充有来由的小事件、小阻碍、日常往来和场景连接/);
+    assert.match(writerRules, /页面、组件、排版及其模板语法由主预设与可见资料决定/);
+    assert.doesNotMatch(writerRules, /【呈现】/);
+    assert.match(writerRules, /大纲没有规定的事项默认开放/);
+    assert.match(writerRules, /可以补充有来由的细节、日常往来、小阻碍和场景连接/);
     assert.doesNotMatch(writerRules, /群像与世界活性|首轮、新场景或已建立多人关系网时/);
-    assert.match(writerRules, /可以改变场景实现、细节、对白往来、叙述顺序与非核心小事件/);
-    assert.match(writerRules, /旧版 plot \/ characters \/ segments \/ end_state/);
+    assert.match(writerRules, /可以改变叙述实现、细节、对白往来、场景组织与非核心小事件/);
+    assert.match(writerRules, /content-v1：plot \/ characters \/ segments \/ end_state/);
     for (const xml of [
         '<content><plot>世界背景：旧城。\n本轮方向：递信。</plot><characters>不涉及</characters><segments><segment index="1">递信。</segment></segments><end_state>本轮状态：信已交出。\n必须遵守：信封保持封闭。</end_state></content>',
         '<content><plot>递信。</plot><characters>不涉及</characters><segments><segment index="1">递信。</segment></segments><end_state>信已交出。</end_state></content>',
