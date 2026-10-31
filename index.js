@@ -46,6 +46,41 @@ const regenerationFallbacks = {
     REUSE_CONFIG_CHANGED: '规划配置已变化，将重新生成大纲。',
 };
 const errorCode = error => typeof error?.code === 'string' && /^[A-Z0-9_]{1,64}$/.test(error.code) ? error.code : 'UNKNOWN';
+const FIXED_IMPORT_MODULE = [
+    ['main', 'outline_fixed_main'],
+    ['outline_emotion', 'outline_fixed_emotion'],
+    ['outline_relationship', 'outline_fixed_relationship'],
+    ['outline_light_user', 'outline_fixed_user'],
+    ['outline_output', 'outline_output'],
+];
+
+function mergeFixedImportModule(preset, v3Preset) {
+    if (!v3Preset) throw new Error('当前安装缺少 V3 固定适配模块，无法导入外部预设；请更新扩展后重试。');
+    // Never replace the imported preset's own main prompt. Only the V3 output
+    // protocol keeps its canonical identifier and replaces an older imported copy.
+    const additions = FIXED_IMPORT_MODULE.map(([sourceId, targetId]) => {
+        const source = v3Preset.prompts.find(prompt => prompt.identifier === sourceId);
+        if (!source) throw new Error(`内置 V3 缺少固定条目 ${sourceId}，无法导入外部预设；请更新扩展后重试。`);
+        return { ...structuredClone(source), identifier: targetId, enabled: true };
+    });
+    const fixedIds = new Set(FIXED_IMPORT_MODULE.map(([, targetId]) => targetId));
+    preset.prompts = preset.prompts.filter(prompt => !fixedIds.has(prompt.identifier));
+    preset.order = preset.order.filter(entry => !fixedIds.has(entry.identifier));
+    for (const id of fixedIds) delete preset.promptGroups[id];
+    let group = preset.groups.find(item => item.id === 'workshop_fixed_v3');
+    if (!group) {
+        group = { id: 'workshop_fixed_v3', name: 'V3 固定适配', enabled: true, collapsed: false, order: preset.groups.length };
+        preset.groups.push(group);
+    } else {
+        group.name = 'V3 固定适配';
+        group.enabled = true;
+    }
+    for (const prompt of additions) {
+        preset.prompts.push(prompt);
+        preset.order.push({ identifier: prompt.identifier, enabled: true });
+        preset.promptGroups[prompt.identifier] = group.id;
+    }
+}
 
 // Detect accidental round/history changes without caching the chat or character card.
 function draftStoryKey(text) {
@@ -1418,15 +1453,8 @@ export async function createPlugin({ getContext, builtin, builtinV2 = null, buil
             if (type === 'importPreset') {
                 if (payload.text.length > 5_000_000) throw new Error('预设文件过大，请使用不超过 5 MB 的 JSON。');
                 const { preset: imported, preserveSelection } = readPlanningPreset(JSON.parse(payload.text), { name: payload.name?.replace(/\.json$/i, '') || '导入预设' });
-                if (!preserveSelection && !imported.prompts.some(x => x.identifier === 'outline_output')) {
-                    const protocol = structuredClone(defaultPreset.prompts.find(x => x.identifier === 'outline_output'));
-                    protocol.content = '本次请求只生成下一条回复的具体剧情大纲，正文由另一模型扩写。沿用已启用条目的人物与剧情要求。\n\n' + protocol.content;
-                    imported.prompts.push(protocol); imported.order.push({ identifier: protocol.identifier, enabled: true });
-                    let group = imported.groups.find(item => item.id === 'workshop_protocol');
-                    if (!group) { group = { id: 'workshop_protocol', name: '规划交付格式', enabled: true, collapsed: false, order: imported.groups.length }; imported.groups.push(group); }
-                    imported.promptGroups[protocol.identifier] = group.id;
-                }
                 if (!preserveSelection) {
+                    mergeFixedImportModule(imported, growthPreset);
                     imported.importAdvice = analyzeImportedPreset(imported);
                     for (const item of imported.importAdvice.disable) {
                         const entry = imported.order.find(entry => entry.identifier === item.id);
@@ -1435,7 +1463,10 @@ export async function createPlugin({ getContext, builtin, builtinV2 = null, buil
                 }
                 const count = preserveSelection ? 0 : imported.importAdvice.disable.length;
                 const result = addPreset(imported);
-                status(count ? `已导入副本，自动关闭 ${count} 个独立输出条目；可在导入检查中查看并恢复。` : '已导入副本，保留原开关；可在导入检查中查看提示。');
+                const importMessage = `已导入副本，固定加入 ${FIXED_IMPORT_MODULE.length} 条 V3 尾部规则`;
+                status(preserveSelection ? '已导入副本，保留原开关；可在导入检查中查看提示。'
+                    : count ? `${importMessage}，自动关闭 ${count} 个独立输出条目；可在导入检查中查看并恢复。`
+                        : `${importMessage}；可在导入检查中查看提示。`);
                 return { ...result, autoDisabledCount: count };
             }
             if (type === 'restoreImportDisabled') {

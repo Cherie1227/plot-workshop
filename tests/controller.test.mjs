@@ -2473,7 +2473,10 @@ test('host preset import creates a planning copy, preserves enabled choices and 
     assert.ok(f.plugin.state.presetLibrary.some(item => item.id === oldId));
     assert.equal(f.plugin.state.preset.prompts.find(item => item.identifier === 'host-rule').content, 'ORIGINAL_HOST_PROMPT');
     assert.equal(f.plugin.state.preset.order.find(item => item.identifier === 'host-rule').enabled, true);
-    assert.ok(f.plugin.state.preset.prompts.some(item => item.identifier === 'outline_output'));
+    assert.deepEqual(f.plugin.state.preset.order.slice(-5).map(item => item.identifier),
+        ['outline_fixed_main', 'outline_fixed_emotion', 'outline_fixed_relationship', 'outline_fixed_user', 'outline_output']);
+    assert.match(f.plugin.state.preset.prompts.find(item => item.identifier === 'outline_fixed_relationship').content, /【专用规则优先】/);
+    assert.match(f.plugin.state.preset.prompts.find(item => item.identifier === 'outline_output').content, /<background>/);
     assert.ok(f.plugin.state.importReview.items.some(item => item.id === 'host-rule' && item.kind === 'prompt' && item.status === 'review' && item.needsReview));
     assert.deepEqual(host.presets[0], original);
     assert.equal(f.plugin.state.activeApiProfileId, oldApi);
@@ -2744,22 +2747,35 @@ test('import adjustment changes only the new copy, persists its report and resto
     const originalPreset = JSON.stringify(f.plugin.state.preset);
     const hostConfig = JSON.stringify(f.ctx.chatCompletionSettings);
     const imported = { name: '普通正文预设', prompts: [
+        { identifier: 'main', name: '外部主任务', role: 'system', content: '外部预设自己的主任务，保持原样。' },
         { identifier: 'character_work', name: '人物理解', role: 'system', content: '结合人物经历确定当前动机和回应。' },
         { identifier: 'prose', name: '正文输出', role: 'system', content: '请直接输出完整的小说正文。' },
         { identifier: 'status', name: '状态栏', role: 'system', content: '在每次回复末尾输出状态栏，包含姓名、心情和位置。' },
         { identifier: 'vars', name: '文风变量', role: 'system', content: '{{setvar::style::细腻}}' },
         { identifier: 'already_off', name: '已关闭条目', role: 'system', content: '不应恢复', enabled: false },
+        { identifier: 'outline_output', name: '旧输出协议', role: 'system', content: '<content><plot>旧版协议</plot></content>' },
     ] };
     const result = await f.plugin.onAction('importPreset', { text: JSON.stringify(imported) });
     assert.equal(result.autoDisabledCount, 2);
     assert.notEqual(f.plugin.state.activePresetId, originalId);
     const enabled = id => f.plugin.state.preset.order.find(item => item.identifier === id)?.enabled;
+    const fixedTail = ['outline_fixed_main', 'outline_fixed_emotion', 'outline_fixed_relationship', 'outline_fixed_user', 'outline_output'];
+    assert.deepEqual(f.plugin.state.preset.order.slice(-5).map(item => item.identifier), fixedTail);
+    assert.equal(f.plugin.state.preset.prompts.find(item => item.identifier === 'main').content, '外部预设自己的主任务，保持原样。');
+    assert.equal(f.plugin.state.preset.prompts.filter(item => item.identifier === 'outline_output').length, 1);
+    assert.match(f.plugin.state.preset.prompts.find(item => item.identifier === 'outline_fixed_relationship').content, /【专用规则优先】/);
+    assert.match(f.plugin.state.preset.prompts.find(item => item.identifier === 'outline_output').content, /<background>[\s\S]*<characters>[\s\S]*<direction>/);
+    assert.doesNotMatch(f.plugin.state.preset.prompts.find(item => item.identifier === 'outline_output').content, /旧版协议/);
+    assert.ok(fixedTail.every(id => f.plugin.state.preset.promptGroups[id] === 'workshop_fixed_v3'));
+    assert.equal(f.plugin.state.preset.groups.find(item => item.id === 'workshop_fixed_v3').enabled, true);
+    assert.match(f.plugin.state.status, /固定加入 5 条 V3 尾部规则/);
     assert.equal(enabled('prose'), false); assert.equal(enabled('status'), false);
     assert.equal(enabled('character_work'), true); assert.equal(enabled('vars'), true); assert.equal(enabled('outline_output'), true);
     assert.equal(f.calls.planner.length, 0); assert.equal(f.calls.recalled, 0);
     assert.equal(JSON.stringify(f.ctx.chatCompletionSettings), hostConfig);
     assert.equal(f.plugin.state.importReview.autoDisabledCount, 2);
     await f.reload();
+    assert.deepEqual(f.plugin.state.preset.order.slice(-5).map(item => item.identifier), fixedTail);
     await f.plugin.onAction('presetSave');
     assert.equal(f.plugin.state.importReview.restorableCount, 2);
     assert.equal((await f.plugin.onAction('restoreImportDisabled')).count, 2);
@@ -2774,11 +2790,17 @@ test('reimporting a Vespera export retains restored selections and scoped import
     const f = await fixture(t);
     await f.plugin.onAction('importPreset', { text: JSON.stringify({ name: '独立正文', prompts: [{ identifier: 'prose', name: '正文输出', content: '请直接输出完整的小说正文。' }] }) });
     await f.plugin.onAction('restoreImportDisabled');
+    await f.plugin.onAction('promptToggle', { identifier: 'outline_fixed_emotion', enabled: false });
     const saved = structuredClone(f.ctx.extensionSettings.plot_workshop.preset);
     assert.equal(saved.extensions.plot_workshop.import_advice.disable.length, 1);
     const result = await f.plugin.onAction('importPreset', { text: JSON.stringify(saved) });
     assert.equal(result.autoDisabledCount, 0);
     assert.equal(f.plugin.state.preset.order.find(item => item.identifier === 'prose').enabled, true);
+    assert.equal(f.plugin.state.preset.order.find(item => item.identifier === 'outline_fixed_emotion').enabled, false);
+    for (const id of ['outline_fixed_main', 'outline_fixed_emotion', 'outline_fixed_relationship', 'outline_fixed_user', 'outline_output']) {
+        assert.equal(f.plugin.state.preset.prompts.filter(item => item.identifier === id).length, 1);
+        assert.equal(f.plugin.state.preset.order.filter(item => item.identifier === id).length, 1);
+    }
     assert.equal(f.plugin.state.importReview.restorableCount, 0);
     await f.plugin.onAction('presetNew');
     assert.equal(f.plugin.state.importReview.autoDisabledCount, 0);
