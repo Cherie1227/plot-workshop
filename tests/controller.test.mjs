@@ -861,6 +861,43 @@ test('host swipe metadata does not erase the reply receipt or force replanning',
     assert.equal(f.calls.planner.length, 1);
 });
 
+test('host and extension runtime metadata does not invalidate the writer receipt', async t => {
+    const f = await fixture(t, {
+        settings: { mode: 'auto', autoOnSend: true, regeneratePolicy: 'reuse' },
+        beforeWriterEnded(ctx) {
+            const character = ctx.characters[ctx.characterId];
+            character.chat = '酒馆内部聊天文件名';
+            character.fav = true;
+            character.data.extensions = {
+                ...character.data.extensions,
+                anima_runtime: { updatedAt: 123456, status: 'running' },
+            };
+        },
+    });
+    await f.ctx.generate('normal');
+    assert.equal(f.plugin.canRewrite(), true);
+    const sealed = f.plugin.state.logs.find(entry => entry.event === 'writer.receipt.sealed');
+    assert.ok(sealed, JSON.stringify(f.plugin.state.logs));
+    const originalPrompt = f.calls.writer[0].prompt;
+    const swiped = await manualSwipe(f);
+    assert.equal(swiped.aborted, false);
+    assert.equal(swiped.injected, originalPrompt);
+    assert.equal(f.calls.planner.length, 1);
+});
+
+test('receipt sealing rejects story-bearing character edits and identifies the section', async t => {
+    const f = await fixture(t, {
+        settings: { mode: 'auto', autoOnSend: true, regeneratePolicy: 'reuse' },
+        beforeWriterEnded(ctx) { ctx.characters[ctx.characterId].data.description = '已经改变的角色描述'; },
+    });
+    await f.ctx.generate('normal');
+    assert.equal(f.plugin.canRewrite(), false);
+    const rejected = f.plugin.state.logs.find(entry => entry.event === 'writer.receipt.rejected');
+    assert.equal(rejected?.details?.reason, 'prefix-changed');
+    assert.equal(rejected?.details?.source, 'character');
+    assert.ok(!JSON.stringify(rejected).includes('已经改变的角色描述'));
+});
+
 test('receipt sealing still rejects altered story text and records a safe reason', async t => {
     const f = await fixture(t, {
         settings: { mode: 'auto', autoOnSend: true, regeneratePolicy: 'reuse' },

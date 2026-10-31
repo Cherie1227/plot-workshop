@@ -864,10 +864,42 @@ export async function createPlugin({ getContext, builtin, builtinV2 = null, writ
             clearInjection(getContext()); state.busy = false; render();
         }
     }
-    // Swipe numbers are host bookkeeping, not story content. Keep every visible
-    // message and all character/context fields strict when sealing a reply receipt.
+    // Swipe numbers, favorite flags, chat file names and other extensions' runtime
+    // state are not story content. Keep every visible message and every prompt-bearing
+    // card field strict without letting unrelated runtime bookkeeping erase a receipt.
+    const WRITER_CARD_FIELDS = ['name', 'description', 'personality', 'scenario', 'first_mes', 'mes_example',
+        'creator_notes', 'creatorcomment', 'system_prompt', 'post_history_instructions', 'character_book', 'world', 'extra_books'];
+    const WRITER_CARD_EXTENSION_FIELDS = ['depth_prompt', 'world', 'regex_scripts'];
+    function pickWriterFields(source, fields) {
+        const result = {};
+        if (!source || typeof source !== 'object' || Array.isArray(source)) return result;
+        for (const key of fields) if (Object.hasOwn(source, key)) result[key] = source[key];
+        return result;
+    }
+    function writerCharacterSnapshot(character) {
+        const snapshot = {
+            base: pickWriterFields(character, WRITER_CARD_FIELDS),
+            data: pickWriterFields(character?.data, WRITER_CARD_FIELDS),
+        };
+        const baseExtensions = pickWriterFields(character?.extensions, WRITER_CARD_EXTENSION_FIELDS);
+        const dataExtensions = pickWriterFields(character?.data?.extensions, WRITER_CARD_EXTENSION_FIELDS);
+        if (Object.keys(baseExtensions).length) snapshot.base.extensions = baseExtensions;
+        if (Object.keys(dataExtensions).length) snapshot.data.extensions = dataExtensions;
+        return snapshot;
+    }
     function writerStorySnapshot(current, targetId = current.chat.length) {
-        return storySnapshot({ ...current, chat: current.chat.slice(0, targetId).map(message => ({ ...message, swipe_id: null })) });
+        const snapshot = JSON.parse(storySnapshot({ ...current, chat: current.chat.slice(0, targetId).map(message => ({ ...message, swipe_id: null })) }));
+        snapshot.character = writerCharacterSnapshot(current.characters?.[current.characterId]);
+        return JSON.stringify(snapshot);
+    }
+    function writerPrefixSource(before, after) {
+        try {
+            const a = JSON.parse(before), b = JSON.parse(after);
+            for (const key of ['chat', 'character', 'persona', 'cardOverrides', 'user', 'chatId', 'characterId', 'groupId']) {
+                if (JSON.stringify(a[key]) !== JSON.stringify(b[key])) return key;
+            }
+        } catch { /* The fixed reason below remains sufficient if parsing fails. */ }
+        return 'unknown';
     }
     function sealWriterReceipt() {
         const pending = pendingWriterReceipt;
@@ -877,13 +909,15 @@ export async function createPlugin({ getContext, builtin, builtinV2 = null, writ
         }
         const current = getContext(), last = current.chat.at(-1);
         if (writerReceipt?.plan === pending.plan && writerReceipt.targetId === pending.targetId && receiptCurrent(writerReceipt)) return true;
+        const prefix = writerStorySnapshot(current, pending.targetId);
         let reason = '';
         if (pending.chatId !== current.chatId) reason = 'chat-changed';
         else if (pending.targetId !== current.chat.length - 1) reason = 'floor-changed';
         else if (!last || last.is_user || last.is_system || !String(last.mes || '').trim()) reason = 'reply-missing';
-        else if (pending.prefix !== writerStorySnapshot(current, pending.targetId)) reason = 'prefix-changed';
+        else if (pending.prefix !== prefix) reason = 'prefix-changed';
         if (reason) {
-            log('warn', 'writer.receipt.rejected', '正文结束时的大纲回执未封存；后续左滑无法安全沿用。', { reason, targetId: pending.targetId });
+            log('warn', 'writer.receipt.rejected', '正文结束时的大纲回执未封存；后续左滑无法安全沿用。', { reason, targetId: pending.targetId,
+                source: reason === 'prefix-changed' ? writerPrefixSource(pending.prefix, prefix) : '' });
             return false;
         }
         writerReceipt = { ...pending, message: last, replyText: String(last.mes ?? ''),
