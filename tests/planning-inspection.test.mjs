@@ -127,6 +127,13 @@ test('all built-ins hand over story facts without prescribing prose implementati
             assert.match(prompts.get('outline_relationship'), /若近期正文已经包含【情感进度】记录/);
             assert.match(prompts.get('outline_relationship'), /未提供情感进度记录时/);
             assert.match(prompts.get('outline_relationship'), /1000 分只表示具备确立恋爱关系的条件/);
+            assert.match(prompts.get('outline_relationship'), /【用户情感依据】/);
+            assert.match(prompts.get('outline_relationship'), /依据用户人格、开场背景、角色卡、世界书、实际聊天和 user_input/);
+            assert.match(prompts.get('outline_relationship'), /资料已经明确关系或感情基础时，直接按具体设定和既有经历承接/);
+            assert.match(prompts.get('outline_relationship'), /不能反向证明 \{\{user\}\} 的感情阶段/);
+            assert.match(prompts.get('outline_relationship'), /未明确／无法确认/);
+            assert.match(prompts.get('outline_relationship'), /不改写设定或既有经历中已经明确的关系/);
+            assert.match(prompts.get('outline_output'), /\{\{user\}\} 的关系与感情结合开场背景、角色卡、用户设定、既有经历、实际聊天和 user_input 分析/);
             const template = prompts.get('outline_output').match(/【固定模板开始】([\s\S]*?)【固定模板结束】/)[1];
             assert.doesNotMatch(template, /【口吻】|【逐字保留】|<beats>|<anchors>|<end_state>/);
         } else {
