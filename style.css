@@ -426,11 +426,6 @@
 .pw-workbench .pw-enable-toggle:not(:disabled):hover{background:var(--pw-accent-soft)}
 
 /* ============ 16. Host integration (verbatim behavior) ============ */
-.vespera-rewrite-shortcut{display:inline-flex;align-items:center;justify-content:center;width:36px;min-width:36px;min-height:44px;padding:6px;border:0;background:transparent;color:var(--SmartThemeBodyColor,currentColor);cursor:pointer;flex-shrink:0}
-.vespera-rewrite-shortcut svg{width:19px;height:19px;pointer-events:none}
-.vespera-rewrite-shortcut:disabled{opacity:.35;cursor:default}
-.vespera-rewrite-shortcut:focus-visible{outline:2px solid currentColor;outline-offset:-3px;border-radius:6px}
-.vespera-rewrite-shortcut.vespera-rewrite-shortcut--menu{width:auto;justify-content:flex-start}
 #top-settings-holder > #vespera-top-entry{
  display:flex!important;align-items:center;justify-content:center;flex-flow:row;
  flex:0 0 44px!important;width:44px!important;min-width:24px!important;max-width:44px!important;

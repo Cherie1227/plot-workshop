@@ -1622,7 +1622,7 @@ export async function createPlugin({ getContext, builtin, builtinV2 = null, buil
     clearInjection(ctx); restoreDraft();
     return {
         state, onAction, intercept, canRewrite, canRewriteReason,
-        attachQuickActions() { quickActions?.destroy(); quickActions = createWriterQuickActions({ getContext, onRewrite: () => onAction('rerollWriter'), canRewrite, rewriteReason: canRewriteReason }); quickActions.refresh(); },
+        attachQuickActions() { quickActions?.destroy(); quickActions = createWriterQuickActions({ getContext, onRewrite: () => onAction('rerollWriter'), canRewrite }); quickActions.refresh(); },
         attachEntryPoints() { entryPoints?.destroy(); entryPoints = createWorkbenchEntryPoints({ onOpen: () => this.open() }); },
         startUpdates() { updater.start(); },
         async open() {
