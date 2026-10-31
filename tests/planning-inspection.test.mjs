@@ -97,3 +97,24 @@ test('built-in ordering is rules-first with context, input, thinking and output 
     assert.ok(!compiled.messages.at(-1).content.includes('<knowledge>'));
     assert.ok(!compiled.messages.at(-1).content.includes('<cause>'));
 });
+
+test('built-in head creative permission is optional and preserves the output contract when enabled', () => {
+    const source = JSON.parse(fs.readFileSync(new URL('../presets/default.json', import.meta.url), 'utf8'));
+    const id = 'outline_jailbreak_head';
+    const runtimeContext = { ...context, worldInfoBefore: '', personaDescription: '用户设定', charDescription: '人物设定', charPersonality: '', scenario: '', worldInfoAfter: '', dialogueExamples: '', chatHistory: [] };
+    assert.equal(source.prompts.find(item => item.identifier === id).enabled, false);
+    assert.equal(source.prompt_order[0].order[1].identifier, id);
+    assert.equal(source.prompt_order[0].order[1].enabled, false);
+    assert.equal(source.extensions.baibaiToolkit.presetPromptGroups.prompts[id].groupId, 'outline_task');
+    const off = compilePreset(normalizePreset(source), { context: runtimeContext });
+    assert.ok(!off.messages.some(message => message.content.includes('【虚构创作许可】')));
+
+    const enabled = structuredClone(source);
+    enabled.prompts.find(item => item.identifier === id).enabled = true;
+    enabled.prompt_order[0].order.find(item => item.identifier === id).enabled = true;
+    const on = compilePreset(normalizePreset(enabled), { context: runtimeContext });
+    assert.equal(on.entries[0].id, 'main');
+    assert.equal(on.entries[1].id, id);
+    assert.match(on.entries[1].messages[0].content, /不输出正文、不改变 content XML 输出合同/);
+    assert.equal(on.entries.at(-1).id, 'outline_output');
+});
