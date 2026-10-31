@@ -2,7 +2,9 @@
 
 SillyTavern 双模型扩展：读取当前输入、角色卡、世界书、聊天历史和 Anima 本轮有效记忆，由独立规划模型完成这一轮的故事设计，再交给酒馆当前主模型重新创作完整中文正文。
 
-当前版本 **0.2.54，测试版**。已进行本地模拟测试与浏览器界面检查，尚未完成真实酒馆、Anima 服务和中转 API 的联调。模拟验证不能替代实际版本、手机键盘与文学效果试读。
+当前版本 **0.2.55，测试版**。已进行本地模拟测试与浏览器界面检查，尚未完成真实酒馆、Anima 服务和中转 API 的联调。模拟验证不能替代实际版本、手机键盘与文学效果试读。
+
+0.2.55 修正 **V3 出场人物覆盖规则**（规划预设 0.8.1，content-v3.1 不变）：characters 必须逐一分析当前已经出场并参与互动的全部人物，包括 {{user}} 与次要人物，不再使用“仅重点人物”或“用户视情况分析”的筛选口径。每位人物仍依次填写 state / change / relationship / choice；这四项的字数按每个 character 独立计算，background 与 direction 分别按整个字段计算。用户 choice 只归纳已体现的意图、立场与允许的即时应对，不新增重大决定。XML 结构、旧大纲、V1／V2 与主模型承接提示词均不变。使用时重新 **恢复 V3 实验** 建立独立副本，已有自定义预设不会被覆盖；无需更新主预设。
 
 0.2.54 删除聊天输入区与扩展菜单中的「按大纲重写正文」循环箭头按钮及其专用样式，不再创建或刷新对应界面元素。保留 `/ves-rewrite` 命令和底层固定大纲重写能力；已有大纲、规划预设与 V1／V2／V3 协议均不受影响。更新并刷新页面后即可生效，手机端实际布局仍需实机确认。
 
@@ -229,7 +231,7 @@ Anima 的重要记忆、Echo 寿命、保留数量、摘要与长期记忆规则
 
 正文目标由主模型用于完整成文。剧情推进决定局面变化的方向与幅度，感情推进独立决定有经历支撑的关系变化幅度。V1／V2 的节拍编号只用于故事因果；V3 不使用节拍，不以字数目标强制增加事件。
 
-**V1 稳定**使用 **plot / characters / segments / end_state**。**V2 实验**使用 **direction / beats / anchors / end_state**：每个 beat 必须包含 event，可按顺序选填 emotion 与 choice；anchors 交接关键事实、认知边界、人物既有口吻与逐字文本；end_state 交接结束状态、持续后果和未完成条件。**V3 实验**使用 **background / characters / direction**：每个重点人物必须依次包含 state / change / relationship / choice；change 写细腻心理因果，relationship 写当前关系阶段或中间态及本轮实际位移，choice 只写立场与取舍；direction 只写已经开始的持续动势。V3 不提供 beats、anchors、end_state，不列【口吻】或逐拍事件。解析器接受三种结构，并兼容没有 relationship 的旧 content-v3.0。
+**V1 稳定**使用 **plot / characters / segments / end_state**。**V2 实验**使用 **direction / beats / anchors / end_state**：每个 beat 必须包含 event，可按顺序选填 emotion 与 choice；anchors 交接关键事实、认知边界、人物既有口吻与逐字文本；end_state 交接结束状态、持续后果和未完成条件。**V3 实验**使用 **background / characters / direction**：当前已经出场并参与互动的全部人物（包括 user）都必须独立分析，每人依次包含 state / change / relationship / choice；change 写细腻心理因果，relationship 写当前关系阶段或中间态及本轮实际位移，choice 只写立场与取舍；direction 只写已经开始的持续动势。人物四项字数按每个 character 独立计算，background 与 direction 分别按整个字段计算。V3 不提供 beats、anchors、end_state，不列【口吻】或逐拍事件。解析器接受三种结构，并兼容没有 relationship 的旧 content-v3.0。
 
 三版大纲都只交接各自负责的故事设计。人称视点、开场转述、结构、详略、环境、心理、具体对白、氛围、节奏、承接、结尾和文风由主模型依主预设独立决定；主模型依据大纲重新创作完整正文，而非逐项扩写或润色。大纲未提组件不代表关闭格式义务，角色卡、世界书和主预设继续生效。user 补写默认轻度，重大回答与决定始终保留给用户。V3 的具体事件、群像介入、场景转换、人物口吻与停点尤其由主模型决定。
 

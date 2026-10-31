@@ -112,6 +112,12 @@ test('all built-ins hand over story facts without prescribing prose implementati
         assert.match(prompts.get('outline_light_user'), /影响剧情走向与关系走向的回答与决定/);
         if (file === 'default-v3.json') {
             assert.match(prompts.get('main'), /主模型依据这些故事依据/);
+            assert.match(prompts.get('main'), /全部人物，包括 \{\{user\}\} 与 \{\{char\}\}/);
+            assert.match(prompts.get('outline_output'), /全部人物，包括 \{\{user\}\}/);
+            assert.match(prompts.get('outline_output'), /按单个 character 独立计算/);
+            assert.match(prompts.get('outline_output'), /每个人物分别使用自己的字段额度/);
+            assert.match(prompts.get('outline_light_user'), /必须单独填写 state、change、relationship、choice/);
+            assert.doesNotMatch([prompts.get('main'), prompts.get('outline_ensemble'), prompts.get('outline_light_user'), prompts.get('outline_output')].join('\n'), /重点人物|不盘点出场名单|若 \{\{user\}\} 是|未参与者|凑人数/);
             assert.equal(prompts.has('outline_dialogue'), false);
             assert.equal(prompts.has('outline_ending'), false);
             assert.match(prompts.get('outline_output'), /四项均不可省略/);

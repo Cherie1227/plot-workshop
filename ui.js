@@ -314,7 +314,7 @@ export function createWorkbench({ getState, onAction }) {
             { title: '建立完整的 V3 实验版独立副本；人物生长结构仍需验证' })
     );
     presetManage.append(field('名称', presetNameInput), presetManageActions,
-        el('p', 'pw-hint', '三版恢复都会新建独立副本，不覆盖当前自定义预设。切换只影响下一次规划；已生成的大纲按自身版本扩写。V3 不锁定逐拍事件、口吻与结尾，但重点人物的情感变化与选择仍必填，请先对照测试。'));
+        el('p', 'pw-hint', '三版恢复都会新建独立副本，不覆盖当前自定义预设。切换只影响下一次规划；已生成的大纲按自身版本扩写。V3 不锁定逐拍事件、口吻与结尾，但所有本轮参与人物（包括 user）的情感变化与选择仍必填，请先对照测试。'));
     const importReviewDetails = el('details', 'pw-import-review pw-advanced');
     importReviewDetails.append(el('summary', '', '导入检查'));
     const importReviewMessage = el('p', 'pw-hint pw-format-status');
