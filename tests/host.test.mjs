@@ -112,6 +112,9 @@ test('temporary injection excludes WI scanning, passes a validity filter and nev
 
 test('writer handoff follows the outline and keeps target, memory and legacy drafts intact', () => {
     const writerRules = fs.readFileSync(new URL('../presets/writer.txt', import.meta.url), 'utf8');
+    assert.match(writerRules, /大纲未写【呈现】或未提组件，不代表省略、关闭或降级为普通旁述/);
+    assert.match(writerRules, /即使大纲没有声明，也必须生成相应组件/);
+    assert.match(writerRules, /角色卡、世界书或主预设要求且本轮触发条件成立的全部正文组件/);
     for (const xml of [
         '<content><plot>世界背景：旧城。\n本轮方向：递信。</plot><characters>不涉及</characters><segments><segment index="1">递信。</segment></segments><end_state>本轮状态：信已交出。\n必须遵守：信封保持封闭。</end_state></content>',
         '<content><plot>递信。</plot><characters>不涉及</characters><segments><segment index="1">递信。</segment></segments><end_state>信已交出。</end_state></content>',

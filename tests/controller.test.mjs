@@ -859,6 +859,32 @@ test('manual swipe under the reuse policy reuses the frozen outline without repl
     assert.equal(f.ctx.extensionPrompts[INJECTION_KEY], undefined);
 });
 
+test('manual swipe survives same-chat reloads and cloned messages but rejects altered reply lineage', async t => {
+    const f = await fixture(t, { settings: { regeneratePolicy: 'reuse', autoOnSend: true } });
+    await f.plugin.onAction('generate', { input: f.input.value });
+    await f.plugin.onAction('confirmAndWrite');
+    const originalPrompt = f.calls.writer[0].prompt;
+
+    // Anima or the host may reload the same chat and clone every message. This
+    // must not erase a receipt whose floor, prefix and generated swipes are intact.
+    f.ctx.chat = structuredClone(f.ctx.chat);
+    await f.events.emit('CHAT_CHANGED', f.ctx.chatId);
+    const reloaded = await manualSwipe(f);
+    assert.equal(reloaded.aborted, false);
+    assert.equal(reloaded.injected, originalPrompt);
+
+    f.ctx.chat = structuredClone(f.ctx.chat);
+    const cloned = await manualSwipe(f);
+    assert.equal(cloned.aborted, false);
+    assert.equal(cloned.injected, originalPrompt);
+    assert.equal(f.calls.planner.length, 1);
+    assert.equal(f.ctx.chat.at(-1).swipes.length, 3);
+
+    f.ctx.chat.at(-1).swipes[0] = '已被其他内容替换';
+    f.ctx.chat = structuredClone(f.ctx.chat);
+    assert.equal(f.plugin.canRewrite(), false);
+});
+
 test('manual swipe arms synchronously: hosts dispatch GENERATION_STARTED without awaiting listeners', async t => {
     const f = await fixture(t, { settings: { regeneratePolicy: 'reuse' } });
     await f.plugin.onAction('generate', { input: f.input.value });

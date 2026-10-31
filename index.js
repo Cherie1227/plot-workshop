@@ -866,10 +866,23 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         if (!receipt || destroyed) return false;
         try {
             const current = getContext(), last = current.chat.at(-1);
-            return current.chatId === receipt.chatId && current.chat.length - 1 === receipt.targetId
-                && last === receipt.message && !last.is_user && !last.is_system
-                && receipt.animaConfig === animaConfigSignature()
-                && storySnapshot({ ...current, chat: current.chat.slice(0, receipt.targetId) }) === receipt.prefix;
+            if (!last || last.is_user || last.is_system || current.chatId !== receipt.chatId
+                || current.chat.length - 1 !== receipt.targetId || receipt.animaConfig !== animaConfigSignature()
+                || storySnapshot({ ...current, chat: current.chat.slice(0, receipt.targetId) }) !== receipt.prefix) return false;
+            // Same-chat reloads can replace every message object without changing the
+            // floor. Rebind only when the original generated swipes are still intact;
+            // object identity alone is not proof that the story stayed unchanged.
+            const originalSwipes = Array.isArray(receipt.replySwipes) ? receipt.replySwipes : [];
+            const sameLineage = last === receipt.message
+                || (originalSwipes.length > 0 && Array.isArray(last.swipes)
+                    && originalSwipes.every((text, index) => last.swipes[index] === text))
+                || (!Array.isArray(last.swipes) && String(last.mes ?? '') === String(receipt.replyText ?? ''));
+            if (!sameLineage) return false;
+            if (last !== receipt.message) {
+                receipt.message = last;
+                log('info', 'writer.receipt.rebound', '同一聊天重载后已重新绑定正文回执，原大纲与正文候选保持有效。');
+            }
+            return true;
         } catch { return false; }
     }
     function canRewrite() {
@@ -1491,7 +1504,8 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
                 if (pending.chatId === current.chatId && pending.targetId === current.chat.length - 1
                     && last && !last.is_user && !last.is_system && String(last.mes || '').trim()
                     && pending.prefix === storySnapshot({ ...current, chat: current.chat.slice(0, pending.targetId) })) {
-                    writerReceipt = { ...pending, message: last };
+                    writerReceipt = { ...pending, message: last, replyText: String(last.mes ?? ''),
+                        replySwipes: Array.isArray(last.swipes) ? last.swipes.map(text => String(text ?? '')) : [String(last.mes ?? '')] };
                 }
             }
             log('success', 'writer.request.completed', '酒馆主模型生成已结束，临时大纲已清理。');
@@ -1517,7 +1531,13 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         anima.clearAnimaGeneration(generationToken); render();
     });
     listen('GENERATION_STOPPED', () => { hostGenerating = false; writerActive = false; cancel('生成已停止；临时大纲已移除。'); });
-    listen('CHAT_CHANGED', () => { cancel('已切换聊天。'); writerReceipt = null; animaCleanup.reset(); state.input = draft(); state.extraWorldbooks = bookNames(extraWorldbooksByChat[getContext().chatId]); restoreDraft(); refreshHostCatalog(); render(); });
+    listen('CHAT_CHANGED', () => {
+        const receipt = writerReceipt, sameChat = receipt?.chatId === getContext().chatId;
+        cancel(sameChat ? '同一聊天已重新载入。' : '已切换聊天。');
+        writerReceipt = sameChat ? receipt : null;
+        animaCleanup.reset(); state.input = draft(); state.extraWorldbooks = bookNames(extraWorldbooksByChat[getContext().chatId]);
+        restoreDraft(); refreshHostCatalog(); render();
+    });
     for (const event of ['MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_RECEIVED']) listen(event, () => quickActions?.refresh());
     const onWorldChange = (name, data) => {
         const cleanup = animaCleanup.consume(name, data, getContext().chatId);
