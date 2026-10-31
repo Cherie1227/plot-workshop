@@ -116,7 +116,7 @@ test('writer handoff follows the outline and keeps target, memory and legacy dra
     assert.match(writerRules, /只要资料要求且本轮触发条件成立，就必须生成相应组件/);
     assert.match(writerRules, /未写入这些字段的事项默认开放/);
     assert.match(writerRules, /允许补充有来由的小事件、小阻碍、日常往来和场景连接/);
-    assert.match(writerRules, /首轮、新场景或已建立多人关系网时/);
+    assert.doesNotMatch(writerRules, /群像与世界活性|首轮、新场景或已建立多人关系网时/);
     assert.match(writerRules, /可以改变场景实现、细节、对白往来、叙述顺序与非核心小事件/);
     assert.match(writerRules, /旧版 plot \/ characters \/ segments \/ end_state/);
     for (const xml of [

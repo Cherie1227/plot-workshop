@@ -224,7 +224,9 @@ test('bundled preset compiles without enabled placeholders and preserves the con
         assert.ok(result.messages.at(-1).content.includes(`<${tag}`));
         assert.ok(result.messages.at(-1).content.includes(`</${tag}>`));
     }
-    assert.match(result.messages.at(-1).content, /首轮、新场景或资料已经建立多人关系网/);
+    const compiled = result.messages.map(message => message.content).join('\n');
+    assert.match(compiled, /群像调度、互动往来、视点分配与戏份控制由正文主预设负责/);
+    assert.doesNotMatch(compiled, /至少让一名有相关事务的既有人物|至少选择一名有相关事务的既有人物|【群像盘点】/);
     assert.ok(result.messages.some(x => x.content.includes('本轮共享的最终正文目标')));
 });
 
