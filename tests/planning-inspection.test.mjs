@@ -123,17 +123,25 @@ test('all built-ins hand over story facts without prescribing prose implementati
             assert.match(prompts.get('outline_output'), /四项均不可省略/);
             assert.match(prompts.get('outline_output'), /state、change、relationship、choice/);
             assert.match(prompts.get('outline_output'), /relationship：100—180 字/);
+            assert.match(prompts.get('outline_relationship'), /【专用规则优先】/);
+            assert.match(prompts.get('outline_relationship'), /按其定义、分数归属、阶段名称、阈值和当前记录分析/);
+            assert.match(prompts.get('outline_relationship'), /只有没有可调用的专用规则时，才使用以下默认粗坐标/);
             assert.match(prompts.get('outline_relationship'), /负向关系/);
-            assert.match(prompts.get('outline_relationship'), /若近期正文已经包含【情感进度】记录/);
+            assert.match(prompts.get('outline_relationship'), /以下区间只在本条默认坐标生效时使用/);
+            assert.match(prompts.get('outline_relationship'), /专用规则明确为双方共享的关系值时按共同证据使用/);
             assert.match(prompts.get('outline_relationship'), /未提供情感进度记录时/);
             assert.match(prompts.get('outline_relationship'), /1000 分只表示具备确立恋爱关系的条件/);
+            assert.match(prompts.get('outline_relationship'), /正文原有的记录义务仍由主模型按当前专用规则执行/);
             assert.match(prompts.get('outline_relationship'), /【用户情感依据】/);
             assert.match(prompts.get('outline_relationship'), /依据用户人格、开场背景、角色卡、世界书、实际聊天和 user_input/);
             assert.match(prompts.get('outline_relationship'), /资料已经明确关系或感情基础时，直接按具体设定和既有经历承接/);
             assert.match(prompts.get('outline_relationship'), /不能反向证明 \{\{user\}\} 的感情阶段/);
             assert.match(prompts.get('outline_relationship'), /未明确／无法确认/);
             assert.match(prompts.get('outline_relationship'), /不改写设定或既有经历中已经明确的关系/);
+            assert.match(prompts.get('outline_output'), /按当前生效的专用关系规则；没有专用规则时才按“关系”条目的默认阶段坐标/);
+            assert.match(prompts.get('outline_think_drive'), /使用当前生效的专用关系规则；没有专用规则时才使用“关系”条目的默认阶段坐标/);
             assert.match(prompts.get('outline_output'), /\{\{user\}\} 的关系与感情结合开场背景、角色卡、用户设定、既有经历、实际聊天和 user_input 分析/);
+            assert.match(prompts.get('outline_output'), /不用其他角色对 \{\{user\}\} 的单方好感度反推/);
             const template = prompts.get('outline_output').match(/【固定模板开始】([\s\S]*?)【固定模板结束】/)[1];
             assert.doesNotMatch(template, /【口吻】|【逐字保留】|<beats>|<anchors>|<end_state>/);
         } else {
