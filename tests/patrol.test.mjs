@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { patrolStory } from '../lib/patrol.js';
+import { parseContent } from '../lib/content.js';
 import { normalizePreset, compilePreset } from '../lib/preset.js';
 
 const para = '窗外的雨一直下，街灯在湿漉漉的路面上拉出长长的影子，空气里有潮湿的泥土味道。';
@@ -48,6 +49,14 @@ test('patrol flags a rewritten outline with the same plot and unchanged end stat
     assert.deepEqual(patrolStory({ chat: [], currentPlan, previousPlanXml: '不是大纲' }), []);
     const v2Previous = '<content><direction>接过信，仍保留戒备。</direction><beats><beat index="1"><event>接信。</event></beat></beats><anchors>无</anchors><end_state>信未拆开，等待回应。</end_state></content>';
     assert.ok(patrolStory({ chat: [], currentPlan, previousPlanXml: v2Previous }).some(text => text.includes('同一件事')));
+});
+
+test('patrol reads V3 background without treating its absent end_state as an unchanged ending', () => {
+    const xml = '<content><background>雨夜，双方仍误认彼此身份。</background><characters><character name="江敛之"><state>他仍在旁观。</state><change>荒谬感中生出了兴致。</change><choice>他选择配合但暂不坦白。</choice></character></characters><direction>扮演关系与身份谜团继续发酵。</direction></content>';
+    const currentPlan = parseContent(xml);
+    assert.deepEqual(patrolStory({ chat: [], currentPlan, previousPlanXml: xml }), []);
+    const v1 = '<content><plot>雨夜，双方仍误认彼此身份。</plot><characters>不涉及</characters><segments><segment index="1">继续对话。</segment></segments><end_state>误认仍未解除。</end_state></content>';
+    assert.deepEqual(patrolStory({ chat: [], currentPlan, previousPlanXml: v1 }), []);
 });
 
 test('patrol suggests manual tiers only for long chats with every tier disabled', () => {

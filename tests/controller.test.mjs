@@ -8,6 +8,7 @@ import { compilePreset } from '../lib/preset.js';
 const xml = '<content><plot>接信。</plot><characters><character name="林澄"><emotion>仍有戒备。</emotion><response>接过信。</response></character></characters><segments><segment index="1">林澄看见封口完好，接过信。</segment></segments><end_state>等待回应。</end_state></content>';
 const builtin = JSON.parse(fs.readFileSync(new URL('../presets/default.json', import.meta.url), 'utf8'));
 const builtinV2 = JSON.parse(fs.readFileSync(new URL('../presets/default-v2.json', import.meta.url), 'utf8'));
+const builtinV3 = JSON.parse(fs.readFileSync(new URL('../presets/default-v3.json', import.meta.url), 'utf8'));
 const turns = () => new Promise(resolve => setImmediate(resolve));
 async function until(predicate, label) {
     for (let i = 0; i < 150; i++) { if (predicate()) return; await turns(); }
@@ -15,7 +16,7 @@ async function until(predicate, label) {
 }
 
 async function fixture(t, { settings = {}, saved, fetchMode = 'success', api, detectAnima, observerGate, recallAnima, host = {}, updaterFactory,
-    viewState = { open: false, unsaved: false }, reloadPage, rewriteMode = 'success', plannerMessage, dynamicCleanupProof, withoutV2 = false, beforeWriterEnded } = {}) {
+    viewState = { open: false, unsaved: false }, reloadPage, rewriteMode = 'success', plannerMessage, dynamicCleanupProof, withoutV2 = false, withoutV3 = false, beforeWriterEnded } = {}) {
     const prior = { document: globalThis.document, sessionStorage: globalThis.sessionStorage, localStorage: globalThis.localStorage, SillyTavern: globalThis.SillyTavern };
     const input = { value: '她递出信。', dispatchEvent() {} };
     const storage = new Map();
@@ -75,7 +76,7 @@ async function fixture(t, { settings = {}, saved, fetchMode = 'success', api, de
     };
     const view = { render() {}, open() { viewState.open = true; }, close() { viewState.open = false; }, destroy() {},
         isOpen: () => viewState.open, hasUnsavedChanges: () => viewState.unsaved };
-    const makePlugin = () => createPlugin({ getContext: () => ctx, builtin, builtinV2: withoutV2 ? null : builtinV2, writerRules: '按当前大纲扩写中文正文。', anima, viewFactory: () => view, fetchImpl,
+    const makePlugin = () => createPlugin({ getContext: () => ctx, builtin, builtinV2: withoutV2 ? null : builtinV2, builtinV3: withoutV3 ? null : builtinV3, writerRules: '按当前大纲扩写中文正文。', anima, viewFactory: () => view, fetchImpl,
         async rewriteReply({ message, targetId, nextSwipe }) {
             assert.equal(targetId, ctx.chat.length - 1);
             message.swipes ??= [message.mes];
@@ -1793,7 +1794,7 @@ test('preset library auto-saves edits, switches without changing API, and restor
     assert.equal(f.plugin.state.activeApiProfileId, api);
 });
 
-test('complete V1 and V2 restore as independent copies and generate only their own protocol', async t => {
+test('complete V1, V2 and V3 restore as independent copies and generate only their own protocol', async t => {
     const f = await fixture(t);
     const custom = f.plugin.state.activePresetId;
     const { id: customPrompt } = await f.plugin.onAction('createPrompt', { name: '自定义保留项', content: 'CUSTOM_PROMPT_MUST_SURVIVE' });
@@ -1820,13 +1821,24 @@ test('complete V1 and V2 restore as independent copies and generate only their o
     await until(() => f.calls.planner.length === 2 && !f.plugin.state.busy, 'V2 generation');
     assert.doesNotMatch(f.calls.planner.at(-1).body.messages.at(-1).content, /V1_LOCAL_EDIT/);
     assert.match(f.calls.planner.at(-1).body.messages.at(-1).content, /<direction>/);
+    const v3 = (await f.plugin.onAction('selectPreset', { id: 'builtin-v3' })).id;
+    assert.notEqual(v3, v2);
+    assert.match(f.plugin.state.preset.name, /V3 实验/);
+    assert.match(output(), /<background>/);
+    assert.match(output(), /<state>|<change>|<choice>/);
+    assert.doesNotMatch(output(), /<beats>|<anchors>|<end_state>|V1_LOCAL_EDIT|CUSTOM_PROMPT_MUST_SURVIVE/);
+    assert.equal(f.plugin.state.preset.prompts.some(item => ['outline_dialogue', 'outline_ending'].includes(item.identifier)), false);
+    await f.plugin.onAction('generate', { input: f.input.value });
+    await until(() => f.calls.planner.length === 3 && !f.plugin.state.busy, 'V3 generation');
+    assert.match(f.calls.planner.at(-1).body.messages.at(-1).content, /<background>/);
+    assert.doesNotMatch(f.calls.planner.at(-1).body.messages.at(-1).content, /V1_LOCAL_EDIT/);
     await f.plugin.onAction('presetSelect', { id: v1 });
     assert.match(output(), /V1_LOCAL_EDIT/);
-    assert.equal(f.plugin.state.presetLibrary.length, 3);
+    assert.equal(f.plugin.state.presetLibrary.length, 4);
     await f.reload();
-    await f.plugin.onAction('presetSelect', { id: v2 });
-    assert.match(output(), /<direction>/);
-    assert.equal(f.plugin.state.presetLibrary.length, 3);
+    await f.plugin.onAction('presetSelect', { id: v3 });
+    assert.match(output(), /<background>/);
+    assert.equal(f.plugin.state.presetLibrary.length, 4);
 });
 
 test('requesting an unavailable V2 never silently falls back to V1', async t => {
@@ -1834,6 +1846,13 @@ test('requesting an unavailable V2 never silently falls back to V1', async t => 
     assert.equal(await f.plugin.onAction('selectPreset', { id: 'builtin-v2' }), false);
     assert.equal(f.plugin.state.presetLibrary.length, 1);
     assert.match(f.plugin.state.status, /V2 实验预设未加载/);
+});
+
+test('requesting an unavailable V3 never silently falls back to V1 or V2', async t => {
+    const f = await fixture(t, { withoutV3: true });
+    assert.equal(await f.plugin.onAction('selectPreset', { id: 'builtin-v3' }), false);
+    assert.equal(f.plugin.state.presetLibrary.length, 1);
+    assert.match(f.plugin.state.status, /V3 实验预设未加载/);
 });
 
 test('API fetch and test use submitted unblurred values, redact failures and never persist test secrets', async t => {

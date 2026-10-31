@@ -98,22 +98,30 @@ test('built-in ordering is rules-first with context, input, thinking and output 
     assert.ok(!compiled.messages.at(-1).content.includes('<cause>'));
 });
 
-test('both built-ins hand over story facts without prescribing prose implementation', () => {
-    for (const file of ['default.json', 'default-v2.json']) {
+test('all built-ins hand over story facts without prescribing prose implementation', () => {
+    for (const file of ['default.json', 'default-v2.json', 'default-v3.json']) {
         const source = JSON.parse(fs.readFileSync(new URL(`../presets/${file}`, import.meta.url), 'utf8'));
         const prompts = new Map(source.prompts.map(item => [item.identifier, item.content]));
-        for (const id of [
-            'outline_light_user', 'outline_third_person', 'outline_ending',
-            'outline_think_drive', 'outline_output', 'outline_userproxy_min',
-            'outline_userproxy_light', 'outline_userproxy_strong', 'outline_userproxy_max',
-        ]) {
+        const inspect = ['outline_light_user', 'outline_third_person', 'outline_think_drive', 'outline_output',
+            'outline_userproxy_min', 'outline_userproxy_light', 'outline_userproxy_strong', 'outline_userproxy_max'];
+        if (file !== 'default-v3.json') inspect.push('outline_ending');
+        for (const id of inspect) {
             assert.doesNotMatch(prompts.get(id), /正文以 user_input 的润色转述起始|使用第三人称|整体视点|视点切换|按正文呈现顺序|最后一拍|叙事重心|视点不停留|视点可以/, `${file}:${id}`);
         }
-        assert.match(prompts.get('main'), /主模型依据这些故事事实与因果重新创作完整正文/);
-        assert.match(prompts.get('outline_output'), /不得规定开场转述、叙述人称与视点/);
         assert.match(prompts.get('outline_third_person'), /认知边界/);
         assert.match(prompts.get('outline_light_user'), /影响剧情走向与关系走向的回答与决定/);
-        assert.match(prompts.get('outline_dialogue'), /逐字保留/);
+        if (file === 'default-v3.json') {
+            assert.match(prompts.get('main'), /主模型依据这些故事依据/);
+            assert.equal(prompts.has('outline_dialogue'), false);
+            assert.equal(prompts.has('outline_ending'), false);
+            assert.match(prompts.get('outline_output'), /三者均不可省略/);
+            const template = prompts.get('outline_output').match(/【固定模板开始】([\s\S]*?)【固定模板结束】/)[1];
+            assert.doesNotMatch(template, /【口吻】|【逐字保留】|<beats>|<anchors>|<end_state>/);
+        } else {
+            assert.match(prompts.get('main'), /主模型依据这些故事事实与因果重新创作完整正文/);
+            assert.match(prompts.get('outline_output'), /不得规定开场转述、叙述人称与视点/);
+            assert.match(prompts.get('outline_dialogue'), /逐字保留/);
+        }
     }
     const writer = fs.readFileSync(new URL('../presets/writer.txt', import.meta.url), 'utf8');
     assert.match(writer, /不是逐字段翻译、复述、扩写或润色大纲/);
@@ -122,6 +130,7 @@ test('both built-ins hand over story facts without prescribing prose implementat
     assert.doesNotMatch(writer, /使用第三人称/);
     assert.match(writer, /【逐字保留】的原句必须准确使用/);
     assert.match(writer, /大纲未提组件不代表省略、关闭或降级为普通旁述/);
+    assert.match(writer, /V3 没有 end_state/);
 });
 
 test('built-in head creative permission is optional and preserves the output contract when enabled', () => {

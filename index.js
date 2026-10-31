@@ -83,13 +83,14 @@ function writePlanningPreset(preset) {
 }
 
 /** Exported for host-contract integration tests; normal installation uses boot(). */
-export async function createPlugin({ getContext, builtin, builtinV2 = null, writerRules, anima = nativeAnima, viewFactory = createWorkbench, fetchImpl = fetch,
+export async function createPlugin({ getContext, builtin, builtinV2 = null, builtinV3 = null, writerRules, anima = nativeAnima, viewFactory = createWorkbench, fetchImpl = fetch,
     api = { fetchModelList, testApiConnection, requestDiagnosis }, updaterFactory = createUpdater,
     extensionUrl = base.href, currentVersion = '开发版', rewriteReply, reloadPage = () => globalThis.location?.reload() } = {}) {
     const ctx = getContext();
     const saved = ctx.extensionSettings[STORE] || {};
     const defaultPreset = normalizePreset(builtin, { name: '状态因果 · 轻度补写（V1 稳定）' });
     const experimentalPreset = builtinV2 ? normalizePreset(builtinV2, { name: '状态因果 · 双弧节拍（V2 实验）' }) : null;
+    const growthPreset = builtinV3 ? normalizePreset(builtinV3, { name: '人物生长 · 情感与方向（V3 实验）' }) : null;
     const initialSettings = cleanSettings(saved.settings), initialWarnings = [];
     const apiProfiles = [];
     for (const profile of Array.isArray(saved.apiProfiles) ? saved.apiProfiles : []) {
@@ -1265,6 +1266,11 @@ export async function createPlugin({ getContext, builtin, builtinV2 = null, writ
                     const result = addPreset(structuredClone(experimentalPreset), experimentalPreset.name);
                     status('已建立 V2 实验预设副本；下一次规划使用精简结构，原有方案仍保留。'); return result;
                 }
+                if (type === 'selectPreset' && payload.id === 'builtin-v3') {
+                    if (!growthPreset) throw new Error('V3 实验预设未加载，请检查扩展文件是否完整。');
+                    const result = addPreset(structuredClone(growthPreset), growthPreset.name);
+                    status('已建立 V3 实验预设副本；下一次规划使用人物生长结构，原有方案仍保留。'); return result;
+                }
                 const result = addPreset(structuredClone(defaultPreset), type === 'presetNew' ? named(payload.name, '新规划预设', '规划预设') : defaultPreset.name);
                 status('已建立 V1 稳定预设副本，原有方案仍保留在预设库中。'); return result;
             }
@@ -1658,11 +1664,11 @@ export async function boot() {
     booted = (async () => {
         const extensions = await import('/scripts/extensions.js');
         const source = () => globalThis.SillyTavern?.getContext?.() || extensions.getContext();
-        const [worldInfoModule, scriptModule, presetResponse, experimentalPresetResponse, writerResponse, manifestResponse] = await Promise.all([
+        const [worldInfoModule, scriptModule, presetResponse, experimentalPresetResponse, growthPresetResponse, writerResponse, manifestResponse] = await Promise.all([
             import('/scripts/world-info.js'), import('/script.js'), fetch(new URL('presets/default.json', base)), fetch(new URL('presets/default-v2.json', base)),
-            fetch(new URL('presets/writer.txt', base)), fetch(new URL('manifest.json', base)),
+            fetch(new URL('presets/default-v3.json', base)), fetch(new URL('presets/writer.txt', base)), fetch(new URL('manifest.json', base)),
         ]);
-        if (!presetResponse.ok || !experimentalPresetResponse.ok || !writerResponse.ok) throw new Error('内置预设文件加载失败，请重新安装完整扩展目录。');
+        if (!presetResponse.ok || !experimentalPresetResponse.ok || !growthPresetResponse.ok || !writerResponse.ok) throw new Error('内置预设文件加载失败，请重新安装完整扩展目录。');
         const getContext = () => {
             const c = source();
             return { ...c, getWorldInfoPrompt: c.getWorldInfoPrompt || worldInfoModule.getWorldInfoPrompt,
@@ -1673,7 +1679,7 @@ export async function boot() {
                 extensionNames: extensions.extensionNames, getExtensionManifest: extensions.getExtensionManifest, worldInfoModule };
         };
         const manifest = manifestResponse.ok ? await manifestResponse.json() : {};
-        const plugin = await createPlugin({ getContext, builtin: await presetResponse.json(), builtinV2: await experimentalPresetResponse.json(),
+        const plugin = await createPlugin({ getContext, builtin: await presetResponse.json(), builtinV2: await experimentalPresetResponse.json(), builtinV3: await growthPresetResponse.json(),
             writerRules: await writerResponse.text(), currentVersion: manifest.version || '未知',
             async rewriteReply({ context, message, targetId, nextSwipe }) {
                 if (typeof context.swipe?.to !== 'function') throw new Error('当前酒馆缺少 swipe.to 接口，请升级酒馆后使用正文重写。');

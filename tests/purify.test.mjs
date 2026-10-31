@@ -38,3 +38,15 @@ test('content-v2 polish preserves optional beat fields and rejects dropped choic
     assert.equal(validatePolish(v2, droppedChoice), false);
     assert.equal(validatePolish(original, v2), false);
 });
+
+test('content-v3 polish preserves mandatory emotional and choice fields', () => {
+    const v3 = parseContent('<content><background>雨夜，误认仍未澄清。</background><characters><character name="江敛之"><state>他旁观陌生人的角色扮演要求。</state><change>对方生硬的提示词先让他觉得荒谬，亲昵称呼又带来轻微不适；他随后生出兴致，但仍没有真实亲密感。</change><choice>他选择配合扮演，保留调侃与试探，暂不坦白身份。</choice></character></characters><direction>扮演关系与身份谜团继续发酵。</direction></content>');
+    const rewritten = parseContent('<content><background>雨夜里，双方的身份误认尚未解除。</background><characters><character name="江敛之"><state>他正在旁观一个陌生人提出的角色扮演要求。</state><change>生硬的提示词使他感到荒谬，亲昵称呼又令他略有不适；之后他产生了兴致，尚未形成真实的亲密感。</change><choice>他愿意参与扮演，同时继续调侃和试探，暂时不说明真实身份。</choice></character></characters><direction>扮演关系继续发展，身份谜团也持续存在。</direction></content>');
+    assert.equal(validatePolish(v3, rewritten), true);
+    for (const field of ['state', 'change', 'choice']) {
+        const damaged = structuredClone(v3);
+        delete damaged.characters[0][field];
+        assert.equal(validatePolish(v3, damaged), false, field);
+    }
+    assert.equal(validatePolish(v3, null), false);
+});

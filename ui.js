@@ -309,10 +309,12 @@ export function createWorkbench({ getState, onAction }) {
         button('恢复 V1 稳定', () => guardPresetChange(async () => { resetEditor(); const result = await act('selectPreset', { id: 'builtin' }); if (result !== false) { presetNameDirty = false; render(); } }),
             { title: '建立完整的 V1 稳定版独立副本' }),
         button('恢复 V2 实验', () => guardPresetChange(async () => { resetEditor(); const result = await act('selectPreset', { id: 'builtin-v2' }); if (result !== false) { presetNameDirty = false; render(); } }),
-            { title: '建立完整的 V2 实验版独立副本；精简结构仍需验证' })
+            { title: '建立完整的 V2 实验版独立副本；逐拍结构仍需验证' }),
+        button('恢复 V3 实验', () => guardPresetChange(async () => { resetEditor(); const result = await act('selectPreset', { id: 'builtin-v3' }); if (result !== false) { presetNameDirty = false; render(); } }),
+            { title: '建立完整的 V3 实验版独立副本；人物生长结构仍需验证' })
     );
     presetManage.append(field('名称', presetNameInput), presetManageActions,
-        el('p', 'pw-hint', '两版恢复都会新建独立副本，不覆盖当前自定义预设。切换只影响下一次规划；已生成的大纲按自身版本扩写。V2 可能减少情绪、信息边界与候选分歧约束，请先对照测试。'));
+        el('p', 'pw-hint', '三版恢复都会新建独立副本，不覆盖当前自定义预设。切换只影响下一次规划；已生成的大纲按自身版本扩写。V3 不锁定逐拍事件、口吻与结尾，但重点人物的情感变化与选择仍必填，请先对照测试。'));
     const importReviewDetails = el('details', 'pw-import-review pw-advanced');
     importReviewDetails.append(el('summary', '', '导入检查'));
     const importReviewMessage = el('p', 'pw-hint pw-format-status');
@@ -332,7 +334,7 @@ export function createWorkbench({ getState, onAction }) {
     const importReviewItems = el('div', 'pw-import-review-items');
     const importReviewHelp = el('details', 'pw-import-review-help');
     importReviewHelp.append(el('summary', '', '格式与依赖说明'),
-        el('p', 'pw-hint', '当前结构：content → direction / beats / anchors / end_state；兼容旧版 plot / characters / segments。保留标签与层级，故事内容可修改。'),
+        el('p', 'pw-hint', '三种结构：V1 为 plot / characters / segments / end_state；V2 为 direction / beats / anchors / end_state；V3 为 background / characters（state / change / choice）/ direction。保留所用版本的标签与层级，故事内容可修改。'),
         el('p', 'pw-hint', '变量和角色宏本身不算冲突；定义需先于引用。上下文占位由酒馆提供，本轮输入和 Anima 记忆自动加入。'));
     importReviewDetails.append(importReviewToolbar, importReviewMessage, importAdjustment, importReviewItems, importReviewHelp);
     const presetUnsaved = el('div', 'pw-editor-notice'); presetUnsaved.hidden = true;
@@ -414,8 +416,8 @@ export function createWorkbench({ getState, onAction }) {
         ['保留', '读卡、人物、情感、剧情、视角与用户参与规则。分析输出也可保留，放在 content 外即可，标签名称不限；生成后在“规划分析”查看，不注入正文请求。'],
         ['自动关闭', '名称与内容明确指向额外输出正文、状态栏或逐轮总结的独立条目。导入后列出原因，可一键恢复。'],
         ['人工检查', '混合多种用途或无法明确识别的输出要求保留待检查。变量和角色宏本身不算冲突。文风和八股模块按内容决定：用于正文措辞的部分可关闭，在主预设中保留。'],
-        ['篇幅', '正文目标供规划与扩写共享；内置预设按篇幅与推进节奏组织事件，大纲表达长度可单独配置。'],
-        ['变量与格式', '变量定义需先于引用，勿整组关闭定义项。固定 content 四字段协议保持启用；脚本和正则不会执行。'],
+        ['篇幅', '正文目标供规划与扩写共享；V1／V2 组织事件，V3 梳理人物变化与推进方向。大纲表达长度可单独配置。'],
+        ['变量与格式', '变量定义需先于引用，勿整组关闭定义项。保持当前版本固定的 content 协议启用；脚本和正则不会执行。'],
     ]) { const item = el('div', 'pw-import-help-item'); item.append(el('strong', '', title), el('p', '', text)); importHelp.append(item); }
     importHelp.append(el('p', 'pw-hint', '识别使用本地规则，不调用模型。Vespera 自己导出的预设保留原开关，不重复整理。'));
     importDrawer.append(importHeading, importHelp, presetActions, hostPresetDetails);
