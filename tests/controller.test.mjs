@@ -825,7 +825,7 @@ test('failed or repeated writer swipes preserve old candidate and always clear t
     }
 });
 
-async function manualSwipe(f, { targetIndex } = {}) {
+async function manualSwipe(f, { targetIndex, interceptorChat } = {}) {
     const index = targetIndex ?? f.ctx.chat.length - 1;
     const message = f.ctx.chat[index];
     message.swipes ??= [message.mes];
@@ -833,7 +833,8 @@ async function manualSwipe(f, { targetIndex } = {}) {
     message.swipe_id = nextSwipe;
     let aborted = false;
     await f.events.emit('GENERATION_STARTED', 'swipe', {}, false);
-    await f.plugin.intercept(f.ctx.chat.slice(0, index), 32000, () => { aborted = true; }, 'swipe');
+    const history = f.ctx.chat.slice(0, index);
+    await f.plugin.intercept(interceptorChat?.(history) ?? history, 32000, () => { aborted = true; }, 'swipe');
     const injected = f.ctx.extensionPrompts[INJECTION_KEY]?.value;
     if (!aborted) { message.mes = `${message.mes}（候选）`; message.swipes[nextSwipe] = message.mes; }
     else message.swipe_id = 0;
@@ -933,6 +934,22 @@ test('manual swipe under the reuse policy reuses the frozen outline without repl
     assert.equal(f.ctx.chat.at(-1).swipes.length, 3);
     assert.equal(f.ctx.chat.at(-1).swipes[0], originalReply);
     assert.equal(f.plugin.canRewrite(), true);
+    assert.equal(f.ctx.extensionPrompts[INJECTION_KEY], undefined);
+});
+
+test('manual swipe ignores trailing interceptor-only system messages when identifying its floor', async t => {
+    const f = await fixture(t, { settings: { regeneratePolicy: 'reuse' } });
+    await f.plugin.onAction('generate', { input: f.input.value });
+    await f.plugin.onAction('confirmAndWrite');
+    const originalPrompt = f.calls.writer[0].prompt;
+    const swiped = await manualSwipe(f, {
+        interceptorChat: history => [...history,
+            { name: '其他扩展', is_user: false, is_system: true, mes: '仅用于提示词构建的尾部注入' }],
+    });
+    assert.equal(swiped.aborted, false);
+    assert.equal(swiped.injected, originalPrompt);
+    assert.equal(f.calls.planner.length, 1);
+    assert.equal(f.calls.writer.length, 1);
     assert.equal(f.ctx.extensionPrompts[INJECTION_KEY], undefined);
 });
 

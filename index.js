@@ -1104,9 +1104,10 @@ export async function createPlugin({ getContext, builtin, builtinV2 = null, buil
             // A manual swipe may target an older floor; only the floor that owns
             // this receipt (identified by its user input) may reuse its outline.
             // Other floors fall through to the host's normal handling, never
-            // receiving a foreign outline.
-            const target = Array.isArray(chat) && chat.length ? chat.at(-1) : null;
-            if (run.manual && !(target?.is_user && String(target.mes ?? '') === run.receipt.input)) {
+            // receiving a foreign outline. Earlier interceptors may append
+            // system-only prompt messages; those do not change the target floor.
+            const target = Array.isArray(chat) ? chat.findLast(message => message?.is_user && !message?.is_system) : null;
+            if (run.manual && !(target && String(target.mes ?? '') === run.receipt.input)) {
                 run.failed = true; disposeReuse?.(); disposeReuse = null; writerReplay = null;
                 anima.clearAnimaGeneration(generationToken); generationToken = undefined;
             } else {
