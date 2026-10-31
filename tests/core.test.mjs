@@ -214,36 +214,50 @@ test('timeout and abort stop waiting even when a custom transport ignores its si
     await assert.rejects(pending, { code: 'ABORTED' });
 });
 
-test('bundled preset compiles without enabled placeholders and preserves the content-v2 protocol', () => {
-    const file = new URL('../presets/default.json', import.meta.url);
-    const p = normalizePreset(fs.readFileSync(file, 'utf8'));
+test('both complete bundled presets compile and retain their own output protocols', () => {
     const context = { ...baseContext, worldInfoBefore: '', personaDescription: '苏青寡言。', charDescription: '林澄重视约定。', charPersonality: '', scenario: '门口。', worldInfoAfter: '', dialogueExamples: '', chatHistory: [] };
-    const result = compilePreset(p, { context, targetLength: '1500—2000 字' });
-    assert.ok(!JSON.stringify(result.messages).includes('〔自行填写或删除〕'));
-    for (const tag of ['content', 'direction', 'beats', 'beat', 'event', 'emotion', 'choice', 'anchors', 'end_state']) {
-        assert.ok(result.messages.at(-1).content.includes(`<${tag}`));
-        assert.ok(result.messages.at(-1).content.includes(`</${tag}>`));
+    const compiled = {};
+    for (const [version, filename, contract] of [[1, 'default.json', 'content-v1.2'], [2, 'default-v2.json', 'content-v2.0']]) {
+        const raw = JSON.parse(fs.readFileSync(new URL(`../presets/${filename}`, import.meta.url), 'utf8'));
+        assert.equal(raw.extensions.dual_model_outline_preset.output_contract, contract);
+        const p = normalizePreset(raw);
+        const result = compilePreset(p, { context, targetLength: '1500—2000 字' });
+        assert.ok(!JSON.stringify(result.messages).includes('〔自行填写或删除〕'));
+        compiled[version] = result.messages.map(message => message.content).join('\n');
+        assert.ok(result.messages.some(x => x.content.includes('本轮共享的最终正文目标')));
     }
-    const compiled = result.messages.map(message => message.content).join('\n');
-    assert.match(compiled, /群像调度、互动往来、视点分配与戏份控制由正文主预设负责/);
-    assert.doesNotMatch(compiled, /至少让一名有相关事务的既有人物|至少选择一名有相关事务的既有人物|【群像盘点】/);
-    assert.ok(result.messages.some(x => x.content.includes('本轮共享的最终正文目标')));
+    for (const tag of ['content', 'plot', 'characters', 'character', 'emotion', 'response', 'segments', 'segment', 'end_state']) {
+        assert.ok(compiled[1].includes(`<${tag}`)); assert.ok(compiled[1].includes(`</${tag}>`));
+    }
+    assert.doesNotMatch(compiled[1], /<direction>|<beats>|<anchors>/);
+    for (const tag of ['content', 'direction', 'beats', 'beat', 'event', 'emotion', 'choice', 'anchors', 'end_state']) {
+        assert.ok(compiled[2].includes(`<${tag}`)); assert.ok(compiled[2].includes(`</${tag}>`));
+    }
 });
 
-test('bundled content-v2 template round-trips and legacy drafts remain readable', () => {
-    const p = normalizePreset(fs.readFileSync(new URL('../presets/default.json', import.meta.url), 'utf8'));
+test('both bundled templates round-trip independently', () => {
     const context = { ...baseContext, worldInfoBefore: '旧城沿用驿站传信。', personaDescription: '苏青寡言。', charDescription: '林澄重视约定。', charPersonality: '', scenario: '门口。', worldInfoAfter: '', dialogueExamples: '', chatHistory: [] };
-    const { messages } = compilePreset(p, { context });
-    const template = messages.at(-1).content.match(/【固定模板开始】\s*([\s\S]*?)\s*【固定模板结束】/)[1];
-    const plan = parseContent(template);
-    assert.equal(plan.version, 2);
-    assert.equal(plan.contract, 'content-v2.0');
-    assert.equal(plan.plot, plan.direction);
-    assert.equal(plan.beats.length, 1);
-    assert.equal(plan.segments, plan.beats);
-    assert.equal(plan.characters.length, 0);
-    assert.ok(!plan.endState.includes('必须遵守'));
-    assert.deepEqual(parseContent(plan.xml), plan);
+    const expectations = [[1, 'default.json', 'content-v1.2'], [2, 'default-v2.json', 'content-v2.0']];
+    for (const [version, filename, contract] of expectations) {
+        const p = normalizePreset(fs.readFileSync(new URL(`../presets/${filename}`, import.meta.url), 'utf8'));
+        const { messages } = compilePreset(p, { context });
+        const template = messages.at(-1).content.match(/【固定模板开始】\s*([\s\S]*?)\s*【固定模板结束】/)[1];
+        const plan = parseContent(template);
+        assert.equal(plan.version, version);
+        assert.equal(plan.contract, contract);
+        assert.deepEqual(parseContent(plan.xml), plan);
+        if (version === 2) {
+            assert.equal(plan.plot, plan.direction);
+            assert.equal(plan.beats.length, 1);
+            assert.equal(plan.segments, plan.beats);
+            assert.equal(plan.characters.length, 0);
+            assert.ok(!plan.endState.includes('必须遵守'));
+        } else {
+            assert.match(plan.plot, /^世界背景：/);
+            assert.equal(plan.segments.length, 1);
+            assert.equal(plan.characters.length, 1);
+        }
+    }
     assert.equal(parseContent(validXml).version, 1);
     assert.equal(parseContent(validXml).plot, '接过信，仍保留戒备。');
 });

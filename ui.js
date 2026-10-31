@@ -306,9 +306,13 @@ export function createWorkbench({ getState, onAction }) {
     presetManageActions.append(
         button('另存为', () => guardPresetChange(() => savePresetName('presetSaveAs'), { keepName: true })),
         button('新建预设', () => guardPresetChange(async () => { resetEditor(); const result = await act('presetNew', {}); if (result !== false) { presetNameDirty = false; render(); } })),
-        button('恢复内置', () => guardPresetChange(async () => { resetEditor(); await act('selectPreset', { id: 'builtin' }); presetNameDirty = false; render(); }))
+        button('恢复 V1 稳定', () => guardPresetChange(async () => { resetEditor(); const result = await act('selectPreset', { id: 'builtin' }); if (result !== false) { presetNameDirty = false; render(); } }),
+            { title: '建立完整的 V1 稳定版独立副本' }),
+        button('恢复 V2 实验', () => guardPresetChange(async () => { resetEditor(); const result = await act('selectPreset', { id: 'builtin-v2' }); if (result !== false) { presetNameDirty = false; render(); } }),
+            { title: '建立完整的 V2 实验版独立副本；精简结构仍需验证' })
     );
-    presetManage.append(field('名称', presetNameInput), presetManageActions);
+    presetManage.append(field('名称', presetNameInput), presetManageActions,
+        el('p', 'pw-hint', '两版恢复都会新建独立副本，不覆盖当前自定义预设。切换只影响下一次规划；已生成的大纲按自身版本扩写。V2 可能减少情绪、信息边界与候选分歧约束，请先对照测试。'));
     const importReviewDetails = el('details', 'pw-import-review pw-advanced');
     importReviewDetails.append(el('summary', '', '导入检查'));
     const importReviewMessage = el('p', 'pw-hint pw-format-status');

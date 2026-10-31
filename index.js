@@ -83,12 +83,13 @@ function writePlanningPreset(preset) {
 }
 
 /** Exported for host-contract integration tests; normal installation uses boot(). */
-export async function createPlugin({ getContext, builtin, writerRules, anima = nativeAnima, viewFactory = createWorkbench, fetchImpl = fetch,
+export async function createPlugin({ getContext, builtin, builtinV2 = null, writerRules, anima = nativeAnima, viewFactory = createWorkbench, fetchImpl = fetch,
     api = { fetchModelList, testApiConnection, requestDiagnosis }, updaterFactory = createUpdater,
     extensionUrl = base.href, currentVersion = '开发版', rewriteReply, reloadPage = () => globalThis.location?.reload() } = {}) {
     const ctx = getContext();
     const saved = ctx.extensionSettings[STORE] || {};
-    const defaultPreset = normalizePreset(builtin, { name: '第三人称 · 轻度抢话' });
+    const defaultPreset = normalizePreset(builtin, { name: '第三人称 · 轻度抢话（V1 稳定）' });
+    const experimentalPreset = builtinV2 ? normalizePreset(builtinV2, { name: '第三人称 · 双弧节拍（V2 实验）' }) : null;
     const initialSettings = cleanSettings(saved.settings), initialWarnings = [];
     const apiProfiles = [];
     for (const profile of Array.isArray(saved.apiProfiles) ? saved.apiProfiles : []) {
@@ -652,7 +653,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         const content = { xml: state.plan.xml, memory: memory?.text || '', target: proseTarget(state.settings), writerRules,
             injection: { position: state.settings.injectionPosition, depth: state.settings.injectionDepth, role: state.settings.injectionRole } };
         const current = getContext();
-        pendingWriterReceipt = { prefix: storySnapshot(current), targetId: current.chat.length,
+        pendingWriterReceipt = { prefix: writerStorySnapshot(current), targetId: current.chat.length,
             chatId: current.chatId, content, animaConfig: animaConfigSignature(), worldRevision,
             animaPath: state.animaDetectedPath || state.settings.animaPath,
             input: state.input, plan: structuredClone(state.plan), memory: structuredClone(memory), outlineConfig: configSignature(true) };
@@ -863,13 +864,40 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             clearInjection(getContext()); state.busy = false; render();
         }
     }
+    // Swipe numbers are host bookkeeping, not story content. Keep every visible
+    // message and all character/context fields strict when sealing a reply receipt.
+    function writerStorySnapshot(current, targetId = current.chat.length) {
+        return storySnapshot({ ...current, chat: current.chat.slice(0, targetId).map(message => ({ ...message, swipe_id: null })) });
+    }
+    function sealWriterReceipt() {
+        const pending = pendingWriterReceipt;
+        if (!pending) {
+            log('warn', 'writer.receipt.rejected', '正文结束时的大纲回执未封存；后续左滑无法安全沿用。', { reason: 'pending-missing' });
+            return false;
+        }
+        const current = getContext(), last = current.chat.at(-1);
+        if (writerReceipt?.plan === pending.plan && writerReceipt.targetId === pending.targetId && receiptCurrent(writerReceipt)) return true;
+        let reason = '';
+        if (pending.chatId !== current.chatId) reason = 'chat-changed';
+        else if (pending.targetId !== current.chat.length - 1) reason = 'floor-changed';
+        else if (!last || last.is_user || last.is_system || !String(last.mes || '').trim()) reason = 'reply-missing';
+        else if (pending.prefix !== writerStorySnapshot(current, pending.targetId)) reason = 'prefix-changed';
+        if (reason) {
+            log('warn', 'writer.receipt.rejected', '正文结束时的大纲回执未封存；后续左滑无法安全沿用。', { reason, targetId: pending.targetId });
+            return false;
+        }
+        writerReceipt = { ...pending, message: last, replyText: String(last.mes ?? ''),
+            replySwipes: Array.isArray(last.swipes) ? last.swipes.map(text => String(text ?? '')) : [String(last.mes ?? '')] };
+        log('info', 'writer.receipt.sealed', '正文回执已保存，可在本楼层沿用大纲。', { targetId: pending.targetId });
+        return true;
+    }
     function receiptCurrent(receipt = writerReceipt) {
         if (!receipt || destroyed) return false;
         try {
             const current = getContext(), last = current.chat.at(-1);
             if (!last || last.is_user || last.is_system || current.chatId !== receipt.chatId
                 || current.chat.length - 1 !== receipt.targetId || receipt.animaConfig !== animaConfigSignature()
-                || storySnapshot({ ...current, chat: current.chat.slice(0, receipt.targetId) }) !== receipt.prefix) return false;
+                || writerStorySnapshot(current, receipt.targetId) !== receipt.prefix) return false;
             // Same-chat reloads can replace every message object without changing the
             // floor. Rebind only when the original generated swipes are still intact;
             // object identity alone is not proof that the story stayed unchanged.
@@ -1198,8 +1226,13 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
                 const result = addPreset(copy, named(payload.name, `${copy.name} 副本`, '规划预设')); status('规划预设已另存为新方案。'); return result;
             }
             if (type === 'presetNew' || type === 'selectPreset') {
+                if (type === 'selectPreset' && payload.id === 'builtin-v2') {
+                    if (!experimentalPreset) throw new Error('V2 实验预设未加载，请检查扩展文件是否完整。');
+                    const result = addPreset(structuredClone(experimentalPreset), experimentalPreset.name);
+                    status('已建立 V2 实验预设副本；下一次规划使用精简结构，原有方案仍保留。'); return result;
+                }
                 const result = addPreset(structuredClone(defaultPreset), type === 'presetNew' ? named(payload.name, '新规划预设', '规划预设') : defaultPreset.name);
-                status('已建立内置预设副本，原有方案仍保留在预设库中。'); return result;
+                status('已建立 V1 稳定预设副本，原有方案仍保留在预设库中。'); return result;
             }
             if (type === 'presetSelect') {
                 const entry = state.presetLibrary.find(item => item.id === payload.id);
@@ -1500,15 +1533,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         hostGenerating = false;
         if (writerReplay) writerReplay.ended = true;
         if (writerActive) {
-            if (pendingWriterReceipt && !writerReplay) {
-                const current = getContext(), pending = pendingWriterReceipt, last = current.chat.at(-1);
-                if (pending.chatId === current.chatId && pending.targetId === current.chat.length - 1
-                    && last && !last.is_user && !last.is_system && String(last.mes || '').trim()
-                    && pending.prefix === storySnapshot({ ...current, chat: current.chat.slice(0, pending.targetId) })) {
-                    writerReceipt = { ...pending, message: last, replyText: String(last.mes ?? ''),
-                        replySwipes: Array.isArray(last.swipes) ? last.swipes.map(text => String(text ?? '')) : [String(last.mes ?? '')] };
-                }
-            }
+            if (!writerReplay) sealWriterReceipt();
             log('success', 'writer.request.completed', '酒馆主模型生成已结束，临时大纲已清理。');
             state.stage = 'complete'; status('正文生成已结束；本轮临时大纲已移除。');
             const last = getContext().chat.at(-1);
@@ -1599,11 +1624,11 @@ export async function boot() {
     booted = (async () => {
         const extensions = await import('/scripts/extensions.js');
         const source = () => globalThis.SillyTavern?.getContext?.() || extensions.getContext();
-        const [worldInfoModule, scriptModule, presetResponse, writerResponse, manifestResponse] = await Promise.all([
-            import('/scripts/world-info.js'), import('/script.js'), fetch(new URL('presets/default.json', base)), fetch(new URL('presets/writer.txt', base)),
-            fetch(new URL('manifest.json', base)),
+        const [worldInfoModule, scriptModule, presetResponse, experimentalPresetResponse, writerResponse, manifestResponse] = await Promise.all([
+            import('/scripts/world-info.js'), import('/script.js'), fetch(new URL('presets/default.json', base)), fetch(new URL('presets/default-v2.json', base)),
+            fetch(new URL('presets/writer.txt', base)), fetch(new URL('manifest.json', base)),
         ]);
-        if (!presetResponse.ok || !writerResponse.ok) throw new Error('内置预设文件加载失败，请重新安装完整扩展目录。');
+        if (!presetResponse.ok || !experimentalPresetResponse.ok || !writerResponse.ok) throw new Error('内置预设文件加载失败，请重新安装完整扩展目录。');
         const getContext = () => {
             const c = source();
             return { ...c, getWorldInfoPrompt: c.getWorldInfoPrompt || worldInfoModule.getWorldInfoPrompt,
@@ -1614,7 +1639,8 @@ export async function boot() {
                 extensionNames: extensions.extensionNames, getExtensionManifest: extensions.getExtensionManifest, worldInfoModule };
         };
         const manifest = manifestResponse.ok ? await manifestResponse.json() : {};
-        const plugin = await createPlugin({ getContext, builtin: await presetResponse.json(), writerRules: await writerResponse.text(), currentVersion: manifest.version || '未知',
+        const plugin = await createPlugin({ getContext, builtin: await presetResponse.json(), builtinV2: await experimentalPresetResponse.json(),
+            writerRules: await writerResponse.text(), currentVersion: manifest.version || '未知',
             async rewriteReply({ context, message, targetId, nextSwipe }) {
                 if (typeof context.swipe?.to !== 'function') throw new Error('当前酒馆缺少 swipe.to 接口，请升级酒馆后使用正文重写。');
                 if (context.swipe.isAllowed?.() === false) throw new Error('请启用酒馆的消息滑动生成，并结束当前生成或消息编辑。');

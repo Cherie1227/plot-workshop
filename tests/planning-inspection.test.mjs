@@ -72,7 +72,7 @@ test('token estimate handles Unicode and runtime messages; inconsistent or absen
 test('built-in ordering is rules-first with context, input, thinking and output contract last and no variable-order dependencies', () => {
     const source = JSON.parse(fs.readFileSync(new URL('../presets/default.json', import.meta.url), 'utf8'));
     const preset = normalizePreset(source);
-    assert.equal(source.name, '第三人称 · 轻度抢话');
+    assert.equal(source.name, '第三人称 · 轻度抢话（V1 稳定）');
     assert.ok(preset.prompts.every(item => !/\{\{\s*(?:set|get)(?:global)?var/i.test(item.content)));
     const groups = ['outline_context','outline_task','outline_tiers','outline_tone','outline_character','outline_special','outline_emotion','outline_story','outline_voice','outline_thinking','outline_delivery'];
     assert.deepEqual(preset.groups.map(group => group.id), groups);

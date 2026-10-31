@@ -7,6 +7,7 @@ import { compilePreset } from '../lib/preset.js';
 
 const xml = '<content><plot>接信。</plot><characters><character name="林澄"><emotion>仍有戒备。</emotion><response>接过信。</response></character></characters><segments><segment index="1">林澄看见封口完好，接过信。</segment></segments><end_state>等待回应。</end_state></content>';
 const builtin = JSON.parse(fs.readFileSync(new URL('../presets/default.json', import.meta.url), 'utf8'));
+const builtinV2 = JSON.parse(fs.readFileSync(new URL('../presets/default-v2.json', import.meta.url), 'utf8'));
 const turns = () => new Promise(resolve => setImmediate(resolve));
 async function until(predicate, label) {
     for (let i = 0; i < 150; i++) { if (predicate()) return; await turns(); }
@@ -14,7 +15,7 @@ async function until(predicate, label) {
 }
 
 async function fixture(t, { settings = {}, saved, fetchMode = 'success', api, detectAnima, observerGate, recallAnima, host = {}, updaterFactory,
-    viewState = { open: false, unsaved: false }, reloadPage, rewriteMode = 'success', plannerMessage, dynamicCleanupProof } = {}) {
+    viewState = { open: false, unsaved: false }, reloadPage, rewriteMode = 'success', plannerMessage, dynamicCleanupProof, withoutV2 = false, beforeWriterEnded } = {}) {
     const prior = { document: globalThis.document, sessionStorage: globalThis.sessionStorage, localStorage: globalThis.localStorage, SillyTavern: globalThis.SillyTavern };
     const input = { value: '她递出信。', dispatchEvent() {} };
     const storage = new Map();
@@ -74,7 +75,7 @@ async function fixture(t, { settings = {}, saved, fetchMode = 'success', api, de
     };
     const view = { render() {}, open() { viewState.open = true; }, close() { viewState.open = false; }, destroy() {},
         isOpen: () => viewState.open, hasUnsavedChanges: () => viewState.unsaved };
-    const makePlugin = () => createPlugin({ getContext: () => ctx, builtin, writerRules: '按当前大纲扩写中文正文。', anima, viewFactory: () => view, fetchImpl,
+    const makePlugin = () => createPlugin({ getContext: () => ctx, builtin, builtinV2: withoutV2 ? null : builtinV2, writerRules: '按当前大纲扩写中文正文。', anima, viewFactory: () => view, fetchImpl,
         async rewriteReply({ message, targetId, nextSwipe }) {
             assert.equal(targetId, ctx.chat.length - 1);
             message.swipes ??= [message.mes];
@@ -110,6 +111,7 @@ async function fixture(t, { settings = {}, saved, fetchMode = 'success', api, de
             assert.ok(prompt && (!prompt.filter || await prompt.filter()), 'Writer requires the valid this-turn outline');
             calls.writer.push({ prompt: prompt.value, model: ctx.chatCompletionSettings.openai_model, position: prompt.position, depth: prompt.depth, role: prompt.role, scan: prompt.scan });
             ctx.chat.push({ name: ctx.name2, is_user: false, mes: '林澄接过信，暂时没有拆开。' });
+            await beforeWriterEnded?.(ctx);
         }
         await events.emit('GENERATION_ENDED');
     };
@@ -837,6 +839,43 @@ async function manualSwipe(f, { targetIndex } = {}) {
     await f.events.emit('GENERATION_ENDED');
     return { aborted, injected };
 }
+
+test('host swipe metadata does not erase the reply receipt or force replanning', async t => {
+    const f = await fixture(t, {
+        settings: { mode: 'auto', autoOnSend: true, regeneratePolicy: 'reuse' },
+        beforeWriterEnded(ctx) {
+            // Hosts and extensions may normalize swipe fields while saving a reply.
+            for (const message of ctx.chat.slice(0, -1)) {
+                message.swipe_id ??= 0;
+                message.swipes ??= [message.mes];
+            }
+        },
+    });
+    await f.ctx.generate('normal');
+    assert.equal(f.plugin.canRewrite(), true);
+    assert.equal(f.plugin.state.logs.some(entry => entry.event === 'writer.receipt.sealed'), true);
+    const originalPrompt = f.calls.writer[0].prompt;
+    const swiped = await manualSwipe(f);
+    assert.equal(swiped.aborted, false);
+    assert.equal(swiped.injected, originalPrompt);
+    assert.equal(f.calls.planner.length, 1);
+});
+
+test('receipt sealing still rejects altered story text and records a safe reason', async t => {
+    const f = await fixture(t, {
+        settings: { mode: 'auto', autoOnSend: true, regeneratePolicy: 'reuse' },
+        beforeWriterEnded(ctx) { ctx.chat.at(-2).mes = '已被改写的用户输入'; },
+    });
+    await f.ctx.generate('normal');
+    assert.equal(f.plugin.canRewrite(), false);
+    const rejected = f.plugin.state.logs.find(entry => entry.event === 'writer.receipt.rejected');
+    assert.ok(rejected, JSON.stringify(f.plugin.state.logs));
+    assert.equal(rejected?.details?.reason, 'prefix-changed');
+    assert.ok(!JSON.stringify(rejected).includes('已被改写的用户输入'));
+    const swiped = await manualSwipe(f);
+    assert.equal(swiped.aborted, true);
+    assert.equal(f.calls.planner.length, 1);
+});
 
 test('manual swipe under the reuse policy reuses the frozen outline without replanning or recalling', async t => {
     const f = await fixture(t, { settings: { regeneratePolicy: 'reuse' } });
@@ -1715,6 +1754,49 @@ test('preset library auto-saves edits, switches without changing API, and restor
     await f.plugin.onAction('presetSelect', { id: second });
     assert.equal(f.plugin.state.preset.prompts.find(item => item.identifier === promptId).content, '第二套修改');
     assert.equal(f.plugin.state.activeApiProfileId, api);
+});
+
+test('complete V1 and V2 restore as independent copies and generate only their own protocol', async t => {
+    const f = await fixture(t);
+    const custom = f.plugin.state.activePresetId;
+    const { id: customPrompt } = await f.plugin.onAction('createPrompt', { name: '自定义保留项', content: 'CUSTOM_PROMPT_MUST_SURVIVE' });
+    const v1 = (await f.plugin.onAction('selectPreset', { id: 'builtin' })).id;
+    assert.notEqual(v1, custom);
+    assert.match(f.plugin.state.preset.name, /V1 稳定/);
+    const output = () => f.plugin.state.preset.prompts.find(item => item.identifier === 'outline_output').content;
+    assert.match(output(), /<plot>/);
+    assert.doesNotMatch(output(), /<direction>/);
+    await f.plugin.onAction('editPrompt', { id: 'outline_output', content: `${output()}\nV1_LOCAL_EDIT` });
+    await f.plugin.onAction('generate', { input: f.input.value });
+    await until(() => f.plugin.state.plan, 'V1 generation');
+    assert.equal(f.calls.planner.at(-1).body.messages.at(-1).content.includes('V1_LOCAL_EDIT'), true);
+    assert.doesNotMatch(f.calls.planner.at(-1).body.messages.at(-1).content, /<direction>/);
+    await until(() => !f.plugin.state.busy, 'V1 planning completion');
+    await f.plugin.onAction('presetSelect', { id: custom });
+    assert.equal(f.plugin.state.preset.prompts.find(item => item.identifier === customPrompt)?.content, 'CUSTOM_PROMPT_MUST_SURVIVE');
+    const v2 = (await f.plugin.onAction('selectPreset', { id: 'builtin-v2' })).id;
+    assert.notEqual(v2, v1);
+    assert.match(f.plugin.state.preset.name, /V2 实验/);
+    assert.match(output(), /<direction>/);
+    assert.doesNotMatch(output(), /V1_LOCAL_EDIT|CUSTOM_PROMPT_MUST_SURVIVE/);
+    await f.plugin.onAction('generate', { input: f.input.value });
+    await until(() => f.calls.planner.length === 2 && !f.plugin.state.busy, 'V2 generation');
+    assert.doesNotMatch(f.calls.planner.at(-1).body.messages.at(-1).content, /V1_LOCAL_EDIT/);
+    assert.match(f.calls.planner.at(-1).body.messages.at(-1).content, /<direction>/);
+    await f.plugin.onAction('presetSelect', { id: v1 });
+    assert.match(output(), /V1_LOCAL_EDIT/);
+    assert.equal(f.plugin.state.presetLibrary.length, 3);
+    await f.reload();
+    await f.plugin.onAction('presetSelect', { id: v2 });
+    assert.match(output(), /<direction>/);
+    assert.equal(f.plugin.state.presetLibrary.length, 3);
+});
+
+test('requesting an unavailable V2 never silently falls back to V1', async t => {
+    const f = await fixture(t, { withoutV2: true });
+    assert.equal(await f.plugin.onAction('selectPreset', { id: 'builtin-v2' }), false);
+    assert.equal(f.plugin.state.presetLibrary.length, 1);
+    assert.match(f.plugin.state.status, /V2 实验预设未加载/);
 });
 
 test('API fetch and test use submitted unblurred values, redact failures and never persist test secrets', async t => {
