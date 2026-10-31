@@ -1920,6 +1920,9 @@ test('outline language polish rewrites language only, falls back safely and leav
     assert.ok(polishCall.body.messages[1].content.includes('林澄看见封口完好'));
     assert.ok(on.plugin.state.plan.xml.includes('把信接了过来'));
     assert.match(on.plugin.state.status, /语言净化/);
+    assert.equal(on.plugin.state.polishCompare.adopted, true);
+    assert.ok(on.plugin.state.polishCompare.original.includes('林澄看见封口完好'));
+    assert.ok(on.plugin.state.polishCompare.purified.includes('把信接了过来'));
     await on.plugin.onAction('confirmAndWrite');
     assert.ok(on.calls.writer[0].prompt.includes('把信接了过来'));
 
@@ -1927,16 +1930,44 @@ test('outline language polish rewrites language only, falls back safely and leav
     await mismatch.plugin.onAction('generate', { input: mismatch.input.value });
     assert.ok(mismatch.plugin.state.plan.xml.includes('林澄看见封口完好，接过信。'));
     assert.equal(mismatch.plugin.state.planningFailure, null);
+    assert.equal(mismatch.plugin.state.polishCompare.adopted, false);
+    assert.equal(mismatch.plugin.state.polishCompare.reason, 'mismatch');
+    assert.ok(mismatch.plugin.state.polishCompare.purified.includes('凭空多出的第二段'));
 
     const failing = await fixture(t, { fetchMode: mode('', true), settings: { polishEnabled: true, polishModel: 'flash-polish' } });
     await failing.plugin.onAction('generate', { input: failing.input.value });
     assert.ok(failing.plugin.state.plan.xml.includes('林澄看见封口完好，接过信。'));
+    assert.equal(failing.plugin.state.polishCompare.reason, 'failed');
+    assert.equal(failing.plugin.state.polishCompare.purified, '');
+
+    assert.equal(off.plugin.state.polishCompare, null, 'no comparison is kept when polish is off');
 
     // Polish settings are execution switches: toggling them must not invalidate a finished outline.
     await off.plugin.onAction('settings', { polishEnabled: true, polishModel: 'flash-polish' });
     assert.match(off.plugin.state.status, /仍匹配|可以编辑、复制或确认扩写/);
     await off.plugin.onAction('confirmAndWrite');
     assert.equal(off.calls.writer.length, 1);
+});
+
+test('a malformed planner response is retried exactly once; a persistent one still surfaces honestly', async t => {
+    const malformed = xml.replace('</plot>', '</plotx>');
+    let flakyCalls = 0;
+    const flaky = () => {
+        flakyCalls += 1;
+        return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: flakyCalls === 1 ? malformed : xml } }] }));
+    };
+    const f = await fixture(t, { fetchMode: flaky });
+    await f.plugin.onAction('generate', { input: f.input.value });
+    assert.equal(f.calls.planner.length, 2, 'one malformed response triggers exactly one retry');
+    assert.ok(f.plugin.state.plan.xml.includes('接过信'));
+    assert.ok(f.plugin.state.logs.some(entry => entry.event === 'planner.request.retry'));
+    assert.equal(f.plugin.state.planningFailure, null);
+
+    const broken = () => new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: malformed } }] }));
+    const g = await fixture(t, { fetchMode: broken });
+    assert.equal(await g.plugin.onAction('generate', { input: g.input.value }), false);
+    assert.equal(g.calls.planner.length, 2, 'the second malformed response is not retried again');
+    assert.equal(g.plugin.state.planningFailure.code, 'CONTENT_INVALID');
 });
 
 test('inspecting an unchanged generated plan preserves confirmation and preview exactly matches the sent planner messages', async t => {

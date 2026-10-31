@@ -554,7 +554,16 @@ export function createWorkbench({ getState, onAction }) {
     const patrolList = el('ul', 'pw-patrol-list');
     const patrolCarry = button('带入下次规划', () => act('carryInspection'));
     patrolBox.append(el('p', 'pw-patrol-title', '故事巡检'), patrolList, patrolCarry);
-    outlinePage.append(pageHeading, steps, patrolBox, inputField, generationActions, failedResponse, planSection);
+    const polishCompare = el('details', 'pw-plan-failure pw-plan-reading');
+    polishCompare.hidden = true;
+    const polishCompareMeta = el('p', 'pw-hint');
+    const polishBeforeTitle = el('h4', '', '净化前（规划原文）');
+    const polishBeforeText = el('pre', 'pw-analysis-text');
+    const polishAfterTitle = el('h4', '', '净化后（净化模型改写）');
+    const polishAfterText = el('pre', 'pw-analysis-text');
+    polishCompare.append(el('summary', '', '净化前后对比'), polishCompareMeta,
+        polishBeforeTitle, polishBeforeText, polishAfterTitle, polishAfterText);
+    outlinePage.append(pageHeading, steps, patrolBox, inputField, generationActions, failedResponse, polishCompare, planSection);
 
     const promptEditorPage = el('section', 'pw-prompt-editor-page');
     const promptBack = button('返回', () => withUnsavedGuard(() => { resetEditor(); render(); restorePromptListPosition(); }), { className: 'pw-back', iconName: 'back' });
@@ -795,8 +804,17 @@ export function createWorkbench({ getState, onAction }) {
     polishEnabled.addEventListener('change', () => { configDrafts.set('polishEnabled', polishEnabled.checked); settingsSaveStatus.textContent = '已修改，点击保存设置可确认当前配置。'; act('settings', { polishEnabled: polishEnabled.checked }); });
     decorateCheckbox(polishLabel, polishEnabled, el('span', '', '规划完成后净化大纲语言'));
     polishSection.append(polishLabel);
-    settingInput(polishSection, 'polishModel', '净化模型', 'text', '如 gemini-3-flash，留空不净化', undefined, { spellcheck: false });
-    polishSection.append(el('p', 'pw-hint', '净化复用规划接口与密钥，由快速模型把大纲改写为平实直述：事实、决定、字段结构与交接标记保持不变，结构与标记校验不一致或请求失败时自动沿用原大纲。'));
+    const polishModelInput = settingInput(polishSection, 'polishModel', '净化模型', 'text', '如 gemini-3-flash，留空不净化', undefined, { spellcheck: false });
+    const polishModels = document.createElement('datalist');
+    polishModels.id = 'pw-polish-models';
+    polishModelInput.setAttribute('list', 'pw-polish-models');
+    const polishActions = el('div', 'pw-model-actions');
+    const polishTestButton = button('测试净化模型', () => act('testPolish', { settings: collectSettings(), apiKey: keyField.value }));
+    polishActions.append(polishTestButton);
+    const polishTestStatus = el('p', 'pw-hint pw-polish-status');
+    polishTestStatus.setAttribute('role', 'status');
+    polishSection.append(polishModels, polishActions, polishTestStatus);
+    polishSection.append(el('p', 'pw-hint', '净化复用规划接口与密钥，模型候选与「规划连接」拉取的列表共享；由快速模型把大纲改写为平实直述：事实、决定、字段结构与交接标记保持不变，结构与标记校验不一致或请求失败时自动沿用原大纲。净化完成后可在大纲页「净化前后对比」核对文本。'));
     const patrolSection = settingsSection('故事巡检');
     const inspectLabel = el('label', 'pw-checkbox-label');
     const inspectEnabled = control('checkbox');
@@ -1780,6 +1798,20 @@ export function createWorkbench({ getState, onAction }) {
         patrolList.replaceChildren(...patrolNotices.map(text => el('li', '', text)));
         patrolCarry.disabled = !patrolNotices.length || !!state.patrolCarried || isBlocked(state);
         patrolCarry.querySelector('span').textContent = state.patrolCarried ? '已带入，仅生效一轮' : '带入下次规划';
+        const compare = state.polishCompare;
+        polishCompare.hidden = !compare;
+        if (compare) {
+            polishCompareMeta.textContent = compare.adopted ? '净化已采用：结构与交接标记校验一致。净化只改语言，以下内容逐段对应，可核对事实与决定是否一致。'
+                : compare.reason === 'mismatch' ? '净化结果与原大纲的结构或交接标记不一致，已自动沿用原大纲；以下为净化模型实际返回，仅供核对。'
+                : '净化请求未完成，已自动沿用原大纲。';
+            polishBeforeText.textContent = compare.original;
+            polishAfterText.textContent = compare.purified || '（净化模型未返回可用文本）';
+            polishAfterTitle.hidden = !compare.purified;
+            polishAfterText.hidden = !compare.purified;
+        }
+        polishModels.replaceChildren(...(Array.isArray(state.models) ? state.models : []).map(id => { const option = document.createElement('option'); option.value = id; return option; }));
+        polishTestStatus.textContent = state.polishStatus || '';
+        polishTestButton.disabled = isBlocked(state);
         footerStatus.textContent = typeof state.status === 'string' ? state.status : state.status?.message || '准备就绪';
         footerDot.classList.toggle('pw-busy', Boolean(state.busy));
         animaStatus.textContent = typeof state.animaStatus === 'string' ? state.animaStatus : state.animaStatus?.message || '尚未检测';

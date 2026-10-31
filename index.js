@@ -123,7 +123,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         promptPreview: null, promptInspection: null, inspectionStale: true, diagnosis: null,
         hostCatalog: null, libraryBusy: false, libraryStatus: '', extraWorldbooks: bookNames(extraWorldbooksByChat[ctx.chatId]), importReview: null,
         status: '准备就绪', stage: 'idle', busy: false, awaitingReview: false, animaStatus: '尚未连接', animaChecking: false,
-        patrolNotices: [], patrolCarried: false,
+        patrolNotices: [], patrolCarried: false, polishCompare: null, polishStatus: '',
         animaDetectedPath: '', animaDetectionStatus: '', animaDetectedVersion: '', logs: [], warnings: initialWarnings, undoDeletion: null, isPreview: false };
     readProfileSecret(activeApi.id);
     const runtimeLog = createRuntimeLog({ getSecrets: () => [...historicalSecrets, state.apiKey, ...[...secretCache.values()].map(item => item.key)], limit: 200 });
@@ -405,15 +405,20 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         const settings = cleanSettings({ ...state.settings, ...payload.settings });
         const apiKey = payload.apiKey === undefined ? state.apiKey : payload.apiKey;
         if (typeof apiKey !== 'string') throw new Error('API 密钥必须是文本。');
+        const polishTest = type === 'testPolish';
+        if (polishTest && !settings.polishModel.trim()) throw new Error('请先填写净化模型。');
+        const model = polishTest ? settings.polishModel : settings.model;
+        const setStatus = text => { if (polishTest) state.polishStatus = text; else state.apiStatus = text; };
+        const eventBase = polishTest ? 'polish.test' : type === 'fetchModels' ? 'api.models' : 'api.test';
         rememberSecret(apiKey);
         const id = ++apiWorkId;
         apiController = new AbortController();
         const signal = apiController.signal;
-        state.apiBusy = true; state.apiStatus = type === 'fetchModels' ? '正在获取模型列表…' : '正在测试连接…';
+        state.apiBusy = true; setStatus(polishTest ? '正在测试净化模型…' : type === 'fetchModels' ? '正在获取模型列表…' : '正在测试连接…');
         if (type === 'fetchModels') state.models = [];
-        log('info', type === 'fetchModels' ? 'api.models.started' : 'api.test.started', type === 'fetchModels' ? '开始获取 API 模型列表。' : '开始测试 API 连接。', { model: settings.model }); render();
+        log('info', `${eventBase}.started`, polishTest ? '开始测试净化模型连接。' : type === 'fetchModels' ? '开始获取 API 模型列表。' : '开始测试 API 连接。', { model }); render();
         try {
-            const options = { getContext, fetchImpl, baseUrl: settings.baseUrl, model: settings.model, stream: settings.stream, apiKey, signal, timeoutMs: 60000 };
+            const options = { getContext, fetchImpl, baseUrl: settings.baseUrl, model, stream: settings.stream, apiKey, signal, timeoutMs: 60000 };
             const result = await (type === 'fetchModels' ? api.fetchModelList(options) : api.testApiConnection(options));
             if (id !== apiWorkId || signal.aborted) return false;
             if (type === 'fetchModels') {
@@ -422,14 +427,14 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
                 state.apiStatus = state.models.length ? `已获取 ${state.models.length} 个模型。请选择模型后保存。` : '连接成功，但没有返回可选模型；可以手动填写。';
             } else {
                 if (!result || typeof result.message !== 'string' || !result.message.trim()) throw new Error('连接测试未返回有效结果。');
-                state.apiStatus = redactSecrets(result.message, [...historicalSecrets, apiKey]).slice(0, 500);
+                setStatus(redactSecrets(result.message, [...historicalSecrets, apiKey]).slice(0, 500));
             }
-            log('success', type === 'fetchModels' ? 'api.models.completed' : 'api.test.completed', type === 'fetchModels' ? 'API 模型列表获取完成。' : 'API 连接测试完成。', { ...(type === 'fetchModels' ? { count: state.models.length } : {}) });
+            log('success', `${eventBase}.completed`, polishTest ? '净化模型连接测试完成。' : type === 'fetchModels' ? 'API 模型列表获取完成。' : 'API 连接测试完成。', { ...(type === 'fetchModels' ? { count: state.models.length } : {}) });
             render(); return result;
         } catch (error) {
             if (id !== apiWorkId || signal.aborted) return false;
-            state.apiStatus = redactSecrets(error?.message || 'API 操作未完成。', [...historicalSecrets, apiKey]).slice(0, 500);
-            log('error', type === 'fetchModels' ? 'api.models.failed' : 'api.test.failed', 'API 操作未完成。', { code: errorCode(error) });
+            setStatus(redactSecrets(error?.message || 'API 操作未完成。', [...historicalSecrets, apiKey]).slice(0, 500));
+            log('error', `${eventBase}.failed`, 'API 操作未完成。', { code: errorCode(error) });
             render(); return false;
         } finally {
             if (id === apiWorkId) { state.apiBusy = false; apiController = null; render(); }
@@ -443,7 +448,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
     }
     function restoreDraft() {
         state.plan = null; state.rawPlan = ''; state.planningAnalysis = null; state.planningFailure = null; anchor = null; memory = null;
-        inspectionCarryover = ''; state.patrolCarried = false; patrolCache.key = null;
+        inspectionCarryover = ''; state.patrolCarried = false; patrolCache.key = null; state.polishCompare = null;
         draftRound = null; restoredDraft = false;
         state.planVersions = []; state.diagnosis = null; state.promptPreview = null;
         state.promptInspection = null; inspectionAnchor = null; diagnosisAnchor = null; currentVersionId = null; versionAnchors.clear();
@@ -558,7 +563,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         state.planVersions = [...state.planVersions, ...versions].slice(-20);
         state.extraWorldbooks = data.extraWorldbooks;
         state.plan = null; state.rawPlan = ''; state.planningAnalysis = null; state.planningFailure = null; anchor = null; memory = null; inspectionAnchor = null; diagnosisAnchor = null;
-        inspectionCarryover = ''; state.patrolCarried = false; patrolCache.key = null; state.patrolNotices = [];
+        inspectionCarryover = ''; state.patrolCarried = false; patrolCache.key = null; state.patrolNotices = []; state.polishCompare = null;
         draftRound = null; restoredDraft = false;
         state.promptInspection = null; state.promptPreview = null; state.diagnosis = null; currentVersionId = null;
         resetDetection(); clearDeletionUndo(); clearInjection(getContext()); persist(); cacheDraft();
@@ -737,27 +742,37 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
         state.stage = 'planning'; planningStatus('规划模型正在生成本轮大纲…');
         log('info', 'planner.request.started', '开始请求本轮大纲。', { model: state.settings.model, messageCount: compiled.messages.length });
         let result;
-        try {
-            result = await requestPlan({ baseUrl: state.settings.baseUrl, model: state.settings.model, apiKey: state.apiKey,
-                messages: compiled.messages, signal, timeoutMs: 600000, stream: state.settings.stream,
-                ...(state.settings.temperature !== '' ? { temperature: Number(state.settings.temperature) } : {}),
-                ...(state.settings.maxTokens !== '' ? { maxTokens: Number(state.settings.maxTokens) } : {}),
-                transport: createSTTransport(getContext, fetchImpl), DOMParser: globalThis.DOMParser });
-        } catch (error) {
-            check(); // Do not expose a late response in another chat or cancelled round.
-            if (error.responsePreview) {
-                state.planningFailure = { ...error.responsePreview, code: errorCode(error), message: error.message,
-                    content: redactSecrets(error.responsePreview.content, [...historicalSecrets, state.apiKey]),
-                    reasoning: redactSecrets(error.responsePreview.reasoning, [...historicalSecrets, state.apiKey]) };
-                error.message += ' 可在“大纲 → 最近失败响应”查看返回文本。';
+        for (let attempt = 0; ; attempt++) {
+            try {
+                result = await requestPlan({ baseUrl: state.settings.baseUrl, model: state.settings.model, apiKey: state.apiKey,
+                    messages: compiled.messages, signal, timeoutMs: 600000, stream: state.settings.stream,
+                    ...(state.settings.temperature !== '' ? { temperature: Number(state.settings.temperature) } : {}),
+                    ...(state.settings.maxTokens !== '' ? { maxTokens: Number(state.settings.maxTokens) } : {}),
+                    transport: createSTTransport(getContext, fetchImpl), DOMParser: globalThis.DOMParser });
+                break;
+            } catch (error) {
+                check(); // Do not expose a late response in another chat or cancelled round.
+                // A stray tag from the planner is stochastic; exactly one free retry.
+                if (error.code === 'CONTENT_INVALID' && attempt === 0) {
+                    log('warn', 'planner.request.retry', '规划返回的大纲 XML 标签未正确配对，已自动重试一次。');
+                    continue;
+                }
+                if (error.responsePreview) {
+                    state.planningFailure = { ...error.responsePreview, code: errorCode(error), message: error.message,
+                        content: redactSecrets(error.responsePreview.content, [...historicalSecrets, state.apiKey]),
+                        reasoning: redactSecrets(error.responsePreview.reasoning, [...historicalSecrets, state.apiKey]) };
+                    error.message += ' 可在“大纲 → 最近失败响应”查看返回文本。';
+                }
+                throw error;
             }
-            throw error;
         }
         check();
         const { raw: returnedText, analysis, ...parsedPlan } = result;
         let plan = parsedPlan, polished = false;
+        state.polishCompare = null;
         if (state.settings.polishEnabled && state.settings.polishModel.trim()) {
             planningStatus('净化模型正在改写大纲语言…');
+            const polishSource = plan.xml;
             let purified = null;
             try {
                 purified = await requestPlan({ baseUrl: state.settings.baseUrl, model: state.settings.polishModel, apiKey: state.apiKey,
@@ -766,6 +781,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
             } catch (error) {
                 check(); // A dead round cancels first; a real polish failure only falls back.
                 log('warn', 'polish.failed', '净化请求未完成，已沿用原大纲。', { message: redactSecrets(error.message, [...historicalSecrets, state.apiKey]) });
+                state.polishCompare = { original: polishSource, purified: '', adopted: false, reason: 'failed' };
             }
             check();
             if (purified) {
@@ -773,7 +789,11 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
                     plan = { xml: purified.xml, plot: purified.plot, characters: purified.characters, segments: purified.segments, endState: purified.endState };
                     polished = true;
                     log('success', 'polish.completed', '大纲语言已净化，结构与交接标记校验一致。');
-                } else log('warn', 'polish.mismatch', '净化结果与原大纲的结构或交接标记不一致，已沿用原大纲。');
+                    state.polishCompare = { original: polishSource, purified: purified.xml, adopted: true, reason: '' };
+                } else {
+                    log('warn', 'polish.mismatch', '净化结果与原大纲的结构或交接标记不一致，已沿用原大纲。');
+                    state.polishCompare = { original: polishSource, purified: purified.xml, adopted: false, reason: 'mismatch' };
+                }
             }
         }
         state.plan = plan; state.rawPlan = plan.xml;
@@ -1155,7 +1175,7 @@ export async function createPlugin({ getContext, builtin, writerRules, anima = n
                 secretCache.delete(profile.id);
                 persist(); status('API 方案已删除。'); return { id: profile.id };
             }
-            if (type === 'fetchModels' || type === 'testApi') return await runApiAction(type, payload);
+            if (type === 'fetchModels' || type === 'testApi' || type === 'testPolish') return await runApiAction(type, payload);
             if (type === 'presetSave') {
                 state.preset.name = named(payload.name, state.preset.name, '规划预设'); persist(); status('规划预设已保存。'); return { id: state.activePresetId };
             }
