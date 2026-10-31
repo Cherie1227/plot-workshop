@@ -334,7 +334,7 @@ export function createWorkbench({ getState, onAction }) {
     const importReviewItems = el('div', 'pw-import-review-items');
     const importReviewHelp = el('details', 'pw-import-review-help');
     importReviewHelp.append(el('summary', '', '格式与依赖说明'),
-        el('p', 'pw-hint', '三种结构：V1 为 plot / characters / segments / end_state；V2 为 direction / beats / anchors / end_state；V3 为 background / characters（state / change / choice）/ direction。保留所用版本的标签与层级，故事内容可修改。'),
+        el('p', 'pw-hint', '三种结构：V1 为 plot / characters / segments / end_state；V2 为 direction / beats / anchors / end_state；V3 为 background / characters（state / change / relationship / choice）/ direction。旧 V3 没有 relationship 时仍可读取；保留所用版本的标签与层级，故事内容可修改。'),
         el('p', 'pw-hint', '变量和角色宏本身不算冲突；定义需先于引用。上下文占位由酒馆提供，本轮输入和 Anima 记忆自动加入。'));
     importReviewDetails.append(importReviewToolbar, importReviewMessage, importAdjustment, importReviewItems, importReviewHelp);
     const presetUnsaved = el('div', 'pw-editor-notice'); presetUnsaved.hidden = true;

@@ -52,7 +52,7 @@ test('patrol flags a rewritten outline with the same plot and unchanged end stat
 });
 
 test('patrol reads V3 background without treating its absent end_state as an unchanged ending', () => {
-    const xml = '<content><background>雨夜，双方仍误认彼此身份。</background><characters><character name="江敛之"><state>他仍在旁观。</state><change>荒谬感中生出了兴致。</change><choice>他选择配合但暂不坦白。</choice></character></characters><direction>扮演关系与身份谜团继续发酵。</direction></content>';
+    const xml = '<content><background>雨夜，双方仍误认彼此身份。</background><characters><character name="江敛之"><state>他仍在旁观。</state><change>荒谬感中生出了兴致。</change><relationship>现实关系处于初识，虚拟扮演尚未形成真实好感。</relationship><choice>他选择配合但暂不坦白。</choice></character></characters><direction>扮演关系与身份谜团继续发酵。</direction></content>';
     const currentPlan = parseContent(xml);
     assert.deepEqual(patrolStory({ chat: [], currentPlan, previousPlanXml: xml }), []);
     const v1 = '<content><plot>雨夜，双方仍误认彼此身份。</plot><characters>不涉及</characters><segments><segment index="1">继续对话。</segment></segments><end_state>误认仍未解除。</end_state></content>';

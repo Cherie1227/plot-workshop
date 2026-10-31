@@ -1825,7 +1825,7 @@ test('complete V1, V2 and V3 restore as independent copies and generate only the
     assert.notEqual(v3, v2);
     assert.match(f.plugin.state.preset.name, /V3 实验/);
     assert.match(output(), /<background>/);
-    assert.match(output(), /<state>|<change>|<choice>/);
+    assert.match(output(), /<state>|<change>|<relationship>|<choice>/);
     assert.doesNotMatch(output(), /<beats>|<anchors>|<end_state>|V1_LOCAL_EDIT|CUSTOM_PROMPT_MUST_SURVIVE/);
     assert.equal(f.plugin.state.preset.prompts.some(item => ['outline_dialogue', 'outline_ending'].includes(item.identifier)), false);
     await f.plugin.onAction('generate', { input: f.input.value });

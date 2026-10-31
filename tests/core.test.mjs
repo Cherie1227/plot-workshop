@@ -6,7 +6,8 @@ import { parseContent, snapshotHash } from '../lib/content.js';
 import { normalizeEndpoint, redactSecrets, requestPlan } from '../lib/planner.js';
 
 const validXml = '<content><plot>接过信，仍保留戒备。</plot><characters><character name="林澄"><emotion>戒备略有缓和。</emotion><response>接信并询问来意。</response></character></characters><segments><segment index="1">第三人称：复述递信动作。林澄看到封口仍然完好，接过信，问对方是否看过内容。语气是试探，未指责。</segment></segments><end_state>信未拆开，等待回应。</end_state></content>';
-const validV3Xml = '<content><background>港城出差第二周的雨夜，江敛之仍在办公室。时今也把他误认成 AI，江敛之决定隐瞒身份；双方都不知道对方获取联系方式的完整经过。</background><characters><character name="江敛之"><state>他对陌生人有距离感，聪明而爱调侃，此刻仍在工作后的疲惫中旁观这场误认。他知道自己是真人，时今也却把他当作可以调整的 AI。</state><change>对方用网络提示词调整他的回应，又直接发来亲昵称呼，让他先感到荒谬和轻微不适，随后意识到自己产生了更多兴致。逗弄的愿望开始压过被冒犯的戒备，但这只是好奇，尚未形成真实亲密感。</change><choice>他愿意配合这场线上角色扮演，同时保留调侃和试探，不主动坦白真人身份，也不把扮演当成真实恋爱承诺。</choice></character></characters><direction>线上扮演关系在误认中展开，江敛之的兴致与身份谜团持续发酵；双方对彼此的真实认知仍有很长的距离。</direction></content>';
+const legacyV3Xml = '<content><background>港城出差第二周的雨夜，江敛之仍在办公室。时今也把他误认成 AI，江敛之决定隐瞒身份；双方都不知道对方获取联系方式的完整经过。</background><characters><character name="江敛之"><state>他对陌生人有距离感，聪明而爱调侃，此刻仍在工作后的疲惫中旁观这场误认。他知道自己是真人，时今也却把他当作可以调整的 AI。</state><change>对方用网络提示词调整他的回应，又直接发来亲昵称呼，让他先感到荒谬和轻微不适，随后意识到自己产生了更多兴致。逗弄的愿望开始压过被冒犯的戒备，但这只是好奇，尚未形成真实亲密感。</change><choice>他愿意配合这场线上角色扮演，同时保留调侃和试探，不主动坦白真人身份，也不把扮演当成真实恋爱承诺。</choice></character></characters><direction>线上扮演关系在误认中展开，江敛之的兴致与身份谜团持续发酵；双方对彼此的真实认知仍有很长的距离。</direction></content>';
+const validV3Xml = legacyV3Xml.replace('</change><choice>', '</change><relationship>现实关系仍处于初识，双方没有基于现实相处的了解与信任；时今也认为自己正在调试虚拟伴侣，江敛之则把这场扮演当作消遣。本轮由一次误发转为持续扮演，他的参与意愿增加，但好奇尚未形成好感，现实关系阶段没有升级。</relationship><choice>');
 const baseContext = { user: '苏青', char: '林澄', currentInput: '她递出信。', animaMemory: '此前曾约定不擅自拆信。', animaStatus: 'success' };
 function makePreset(prompts, order = prompts.map(p => ({ identifier: p.identifier, enabled: true })), extra = {}) {
     return normalizePreset({ prompts, prompt_order: [{ character_id: 100001, order }], ...extra });
@@ -218,7 +219,7 @@ test('timeout and abort stop waiting even when a custom transport ignores its si
 test('all complete bundled presets retain their protocols and leave presentation to the writer', () => {
     const context = { ...baseContext, worldInfoBefore: '', personaDescription: '苏青寡言。', charDescription: '林澄重视约定。', charPersonality: '', scenario: '门口。', worldInfoAfter: '', dialogueExamples: '', chatHistory: [] };
     const compiled = {};
-    for (const [version, filename, contract] of [[1, 'default.json', 'content-v1.2'], [2, 'default-v2.json', 'content-v2.0'], [3, 'default-v3.json', 'content-v3.0']]) {
+    for (const [version, filename, contract] of [[1, 'default.json', 'content-v1.2'], [2, 'default-v2.json', 'content-v2.0'], [3, 'default-v3.json', 'content-v3.1']]) {
         const raw = JSON.parse(fs.readFileSync(new URL(`../presets/${filename}`, import.meta.url), 'utf8'));
         assert.equal(raw.extensions.dual_model_outline_preset.output_contract, contract);
         const p = normalizePreset(raw);
@@ -240,7 +241,7 @@ test('all complete bundled presets retain their protocols and leave presentation
         assert.ok(compiled[2].includes(`<${tag}`)); assert.ok(compiled[2].includes(`</${tag}>`));
     }
     assert.doesNotMatch(compiled[2], /特殊格式|规划端独有的最小模板/);
-    for (const tag of ['content', 'background', 'characters', 'character', 'state', 'change', 'choice', 'direction']) {
+    for (const tag of ['content', 'background', 'characters', 'character', 'state', 'change', 'relationship', 'choice', 'direction']) {
         assert.ok(compiled[3].includes(`<${tag}`)); assert.ok(compiled[3].includes(`</${tag}>`));
     }
     assert.doesNotMatch(compiled[3], /<beats>|<beat|<anchors>|<end_state>|<event>/);
@@ -248,7 +249,7 @@ test('all complete bundled presets retain their protocols and leave presentation
 
 test('all bundled templates round-trip independently', () => {
     const context = { ...baseContext, worldInfoBefore: '旧城沿用驿站传信。', personaDescription: '苏青寡言。', charDescription: '林澄重视约定。', charPersonality: '', scenario: '门口。', worldInfoAfter: '', dialogueExamples: '', chatHistory: [] };
-    const expectations = [[1, 'default.json', 'content-v1.2'], [2, 'default-v2.json', 'content-v2.0'], [3, 'default-v3.json', 'content-v3.0']];
+    const expectations = [[1, 'default.json', 'content-v1.2'], [2, 'default-v2.json', 'content-v2.0'], [3, 'default-v3.json', 'content-v3.1']];
     for (const [version, filename, contract] of expectations) {
         const p = normalizePreset(fs.readFileSync(new URL(`../presets/${filename}`, import.meta.url), 'utf8'));
         const { messages } = compilePreset(p, { context });
@@ -280,13 +281,15 @@ test('all bundled templates round-trip independently', () => {
     assert.equal(parseContent(validXml).plot, '接过信，仍保留戒备。');
 });
 
-test('content-v3 requires nuanced change and choice for every focus character and round-trips the rain-night example', () => {
+test('content-v3.1 requires nuanced change, relationship and choice, while legacy V3 remains readable', () => {
     const plan = parseContent(validV3Xml);
     assert.equal(plan.version, 3);
-    assert.equal(plan.contract, 'content-v3.0');
+    assert.equal(plan.contract, 'content-v3.1');
     assert.equal(plan.plot, plan.background);
     assert.match(plan.characters[0].change, /荒谬和轻微不适/);
     assert.match(plan.characters[0].change, /更多兴致/);
+    assert.match(plan.characters[0].relationship, /现实关系仍处于初识/);
+    assert.match(plan.characters[0].relationship, /好奇尚未形成好感/);
     assert.match(plan.characters[0].choice, /保留调侃和试探/);
     assert.equal(plan.characters[0].emotion, plan.characters[0].change);
     assert.equal(plan.characters[0].response, plan.characters[0].choice);
@@ -298,9 +301,17 @@ test('content-v3 requires nuanced change and choice for every focus character an
         const malformed = validV3Xml.replace(new RegExp(`<${field}>[\\s\\S]*?</${field}>`), '');
         assert.throws(() => parseContent(malformed), /character/);
     }
+    const withoutRelationship = validV3Xml.replace(/<relationship>[\s\S]*?<\/relationship>/, '');
+    assert.equal(parseContent(withoutRelationship).contract, 'content-v3.0');
     assert.throws(() => parseContent(validV3Xml.replace('</direction>', '</direction><end_state>固定结尾。</end_state>')), /content/);
-    assert.throws(() => parseContent(validV3Xml.replace('<characters>', '<characters><character name="江敛之"><state>状态</state><change>变化</change><choice>选择</choice></character>')), /重复/);
+    assert.throws(() => parseContent(validV3Xml.replace('<characters>', '<characters><character name="江敛之"><state>状态</state><change>变化</change><relationship>初识。</relationship><choice>选择</choice></character>')), /重复/);
+    assert.throws(() => parseContent(validV3Xml.replace('<characters>', '<characters><character name="时今也"><state>状态</state><change>变化</change><choice>选择</choice></character>')), /统一/);
     assert.throws(() => parseContent(validV3Xml.replace(/<characters>[\s\S]*?<\/characters>/, '<characters></characters>')), /至少一个/);
+
+    const legacy = parseContent(legacyV3Xml);
+    assert.equal(legacy.contract, 'content-v3.0');
+    assert.equal('relationship' in legacy.characters[0], false);
+    assert.deepEqual(parseContent(legacy.xml), legacy);
 });
 
 test('content-v2 allows optional emotion and choice but rejects malformed beat shapes', () => {

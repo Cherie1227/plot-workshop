@@ -114,7 +114,13 @@ test('all built-ins hand over story facts without prescribing prose implementati
             assert.match(prompts.get('main'), /主模型依据这些故事依据/);
             assert.equal(prompts.has('outline_dialogue'), false);
             assert.equal(prompts.has('outline_ending'), false);
-            assert.match(prompts.get('outline_output'), /三者均不可省略/);
+            assert.match(prompts.get('outline_output'), /四项均不可省略/);
+            assert.match(prompts.get('outline_output'), /state、change、relationship、choice/);
+            assert.match(prompts.get('outline_output'), /relationship：100—180 字/);
+            assert.match(prompts.get('outline_relationship'), /负向关系/);
+            assert.match(prompts.get('outline_relationship'), /若近期正文已经包含【情感进度】记录/);
+            assert.match(prompts.get('outline_relationship'), /未提供情感进度记录时/);
+            assert.match(prompts.get('outline_relationship'), /1000 分只表示具备确立恋爱关系的条件/);
             const template = prompts.get('outline_output').match(/【固定模板开始】([\s\S]*?)【固定模板结束】/)[1];
             assert.doesNotMatch(template, /【口吻】|【逐字保留】|<beats>|<anchors>|<end_state>/);
         } else {
